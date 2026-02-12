@@ -25,6 +25,7 @@ namespace AutoQuestPlugin
         CLICK_SHORTMISSION,      // Click ShortMissionPanel (auto-pathfind)
         PATHFIND_AND_TALK_NPC,   // Pathfind → NPC dialog → click quest button
         PRESS_MOVEMENT_KEYS,     // Bấm phím mũi tên di chuyển (tutorial quest)
+        PRESS_SKILL_KEY,         // Bấm phím kỹ năng (skill 1, 2, 3...)
         WAIT_KILL,               // Chờ user/auto kill
         WAIT_USER,               // Chờ user thao tác
         CLICK_ITEM,              // Click item UI
@@ -87,8 +88,8 @@ namespace AutoQuestPlugin
             ("Nhận",         QuestType.TALK,     QuestAction.PATHFIND_AND_TALK_NPC,   0.80f),
             
             // USE_ITEM quests
-            ("Dùng Thẻ",     QuestType.USE_ITEM, QuestAction.WAIT_USER,               0.80f),
-            ("Dùng",         QuestType.USE_ITEM, QuestAction.WAIT_USER,               0.70f),
+            ("Dùng Thẻ",     QuestType.USE_ITEM, QuestAction.PRESS_SKILL_KEY,         0.90f),
+            ("Dùng",         QuestType.USE_ITEM, QuestAction.PRESS_SKILL_KEY,         0.80f),
             
             // COLLECT quests
             ("Tìm lại",      QuestType.COLLECT,  QuestAction.CLICK_SHORTMISSION,      0.80f),
@@ -376,7 +377,7 @@ namespace AutoQuestPlugin
                 case QuestType.MOVE: return QuestAction.PRESS_MOVEMENT_KEYS;
                 case QuestType.TALK: return QuestAction.PATHFIND_AND_TALK_NPC;
                 case QuestType.KILL: return QuestAction.WAIT_KILL;
-                case QuestType.USE_ITEM: return QuestAction.WAIT_USER;
+                case QuestType.USE_ITEM: return QuestAction.PRESS_SKILL_KEY;
                 case QuestType.COLLECT: return QuestAction.CLICK_SHORTMISSION;
                 case QuestType.JOIN: return QuestAction.WAIT_USER;
                 default: return QuestAction.CLICK_SHORTMISSION;

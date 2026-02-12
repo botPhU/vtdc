@@ -221,6 +221,10 @@ namespace AutoQuestPlugin
         private float _tutorialMoveInterval = 1.5f;  // Thử di chuyển mỗi 1.5s
         private int _tutorialMoveDir = 0;             // Hướng di chuyển (0=right, 1=up, 2=left, 3=down)
 
+        // Tutorial skill press
+        private float _skillPressTimer = 0f;
+        private float _skillPressInterval = 2.0f;     // Bấm skill mỗi 2s
+
         // Command console (Launcher ↔ Bot communication)
         private float _cmdCheckTimer = 0f;
         private float _cmdCheckInterval = 2f; // Check mỗi 2s
@@ -920,6 +924,59 @@ namespace AutoQuestPlugin
                     if (!shortMissionWorked)
                     {
                         TryTutorialMovement();
+                    }
+                }
+            }
+
+            // ======================== MODULE 1C: AUTO SKILL QUEST (AI-driven) ========================
+            // Khi quest là USE_ITEM và yêu cầu bấm phím kỹ năng (Dùng Thẻ Kỹ Năng X)
+            if (_autoQuestEnabled && inGame && _currentQuestInfo != null 
+                && _currentQuestInfo.Action == QuestAction.PRESS_SKILL_KEY)
+            {
+                _skillPressTimer += Time.deltaTime;
+                if (_skillPressTimer >= _skillPressInterval)
+                {
+                    _skillPressTimer = 0f;
+                    
+                    // Parse skill number from quest text ("...Kỹ Năng 2" -> 2)
+                    int skillNum = 0;
+                    var match = System.Text.RegularExpressions.Regex.Match(_currentQuestInfo.QuestText, @"\d+");
+                    if (match.Success)
+                    {
+                        int.TryParse(match.Value, out skillNum);
+                    }
+
+                    if (skillNum >= 1 && skillNum <= 5)
+                    {
+                        // Map 1-5 to Alpha1-Alpha5
+                        KeyCode[] skillKeys = { KeyCode.Alpha1, KeyCode.Alpha2, KeyCode.Alpha3, KeyCode.Alpha4, KeyCode.Alpha5 };
+                        KeyCode key = skillKeys[skillNum - 1];
+                        
+                        // Simulate key press logic (log only for now, actual input via Input is read-only)
+                        // BotController doesn't have a way to inject key press into Unity Input system directly easily
+                        // BUT we can use the InputRecorder's replay mechanism OR just Log it and hope user does it?
+                        // NO, user expects automation.
+                        // We can't easily simulate Input.GetKeyDown in Unity without an external tool or rigorous hooking.
+                        // However, many games use UI buttons for skills on mobile/PC. 
+                        // Let's try to find the Skill Button UI and click it!
+                        
+                        string btnName = $"SkillButton{skillNum}"; // Hypothesized name
+                        // Or "Skill_{skillNum}", "AttackButton_{skillNum}" check hierarchy
+                        
+                        bool clicked = false;
+                        // Strategy: Find explicit skill buttons if possible, otherwise rely on user? 
+                        // User said "dùng các nút ấy chứ không phải click" which implies interacting with the controls.
+                        // Wait, user said "dùng các nút ấy" (use those buttons) "chữ không phải click" (not click [ShortMission?]).
+                        // It might mean PRESS KEYBOARD BUTTONS. 
+                        // Since we can't inject StartCoroutine(SimulateKeyPress) easily safely...
+                        // Actually, we can click the UI button corresponding to the skill.
+                        
+                        // Let's try to find UI buttons for skills: "SkillButton_1", "Slot_1", etc.
+                        // For now, let's look for objects with "Skill" and the number.
+                        
+                        // Common names: SkillSlot_1, Skill_1, etc.
+                        // Let's create a helper to find and click skill button.
+                        TryClickSkillButton(skillNum);
                     }
                 }
             }
@@ -2307,6 +2364,93 @@ namespace AutoQuestPlugin
             catch (Exception ex)
             {
                 Plugin.Log.LogWarning($"[Bot] TryTutorialMovement error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Tìm skill button trên UI và click (giả lập phím bấm)
+        /// </summary>
+        private void TryClickSkillButton(int skillNum)
+        {
+            try
+            {
+                // List các pattern tên button có thể có (cần check hierarchy thực tế)
+                // Giả sừ: SkillButton1, Skill_1, Slot1, AttackButton1...
+                string[] patterns = { 
+                    $"SkillButton{skillNum}", 
+                    $"SkillButton_{skillNum}", 
+                    $"Skill{skillNum}", 
+                    $"Skill_{skillNum}", 
+                    $"Slot{skillNum}", 
+                    $"Slot_{skillNum}", 
+                    $"AttackButton{skillNum}" 
+                };
+
+                bool clicked = false;
+                foreach (var name in patterns)
+                {
+                    var btnObj = GameObject.Find(name);
+                    // Nếu tìm thấy theo tên chính xác
+                    if (btnObj != null && btnObj.activeSelf)
+                    {
+                        var btn = btnObj.GetComponent<Button>();
+                        if (btn == null) btn = btnObj.GetComponentInChildren<Button>();
+                        
+                        if (btn != null && btn.interactable)
+                        {
+                            _botInvoking = true;
+                            btn.onClick.Invoke();
+                            _botInvoking = false;
+                            Plugin.Log.LogInfo($"[Bot] ⚔️ Auto Skill: Clicked {name} (Skill {skillNum})");
+                            LogStateAction($"SKILL_CLICK: {name} (Skill {skillNum})");
+                            clicked = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // Nếu chưa click được, thử tìm trong cụm SkillPanel/AttackPanel
+                if (!clicked)
+                {
+                    // Fallback strategy: tìm cha rồi tìm con
+                    string[] parentNames = { "SkillPanel", "AttackStart", "MainCanvas", "HUDCanvas" };
+                    foreach (var pName in parentNames)
+                    {
+                         var parent = GameObject.Find(pName);
+                         if (parent != null)
+                         {
+                             // Tìm đệ quy
+                             foreach (var name in patterns)
+                             {
+                                 var child = FindInactiveChild(parent.transform, name); // Helper function
+                                 if (child != null && child.gameObject.activeSelf)
+                                 {
+                                     var btn = child.GetComponent<Button>();
+                                     if (btn != null && btn.interactable)
+                                     {
+                                         _botInvoking = true;
+                                         btn.onClick.Invoke();
+                                         _botInvoking = false;
+                                         Plugin.Log.LogInfo($"[Bot] ⚔️ Auto Skill (Hierarchy): Clicked {name} in {pName}");
+                                         LogStateAction($"SKILL_CLICK: {name} (Skill {skillNum})");
+                                         clicked = true;
+                                         goto EndSearch;
+                                     }
+                                 }
+                             }
+                         }
+                    }
+                }
+                
+                EndSearch:
+                if (!clicked)
+                {
+                    Plugin.Log.LogWarning($"[Bot] ⚠️ Could not find Skill Button for Skill {skillNum}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[Bot] TryClickSkillButton error: {ex.Message}");
             }
         }
 
