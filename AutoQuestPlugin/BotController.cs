@@ -209,6 +209,7 @@ namespace AutoQuestPlugin
         };
         private HashSet<int> _hookedBtnIds = new HashSet<int>();  // Track button đã hook
         private string _lastNpcName = "";  // Tên NPC đang tương tác
+        private bool _botInvoking = false;  // Flag: true khi BOT gọi onClick.Invoke() (không phải user click)
 
         // Command console (Launcher ↔ Bot communication)
         private float _cmdCheckTimer = 0f;
@@ -1922,14 +1923,14 @@ namespace AutoQuestPlugin
                     string capText = btnText;
                     string capPath = path;
 
-                    // XÓA tất cả listener cũ trước khi add mới (tránh tích lũy duplicate)
-                    // Lưu ý: điều này cũng xóa listener game gốc, nhưng onClick.Invoke() 
-                    // từ bot sẽ vẫn hoạt động vì bot gọi trực tiếp
-                    // Chỉ log khi USER click (không phải bot invoke)
+                    // Hook listener - CHỈ log khi USER click (không phải bot invoke)
                     btn.onClick.AddListener((UnityEngine.Events.UnityAction)(() =>
                     {
                         try
                         {
+                            // Skip logging khi bot đang invoke (không phải user click)
+                            if (_botInvoking) return;
+                            
                             // Re-read text at click time (có thể đã thay đổi)
                             string currentText = capText;
                             try {
@@ -2433,26 +2434,32 @@ namespace AutoQuestPlugin
                         if (anyBtn == null) anyBtn = btn;
                     }
 
-                    // Execute click with priority
+                    // Execute click with priority - Set _botInvoking flag to suppress hook logging
                     if (questBtn != null)
                     {
                         Plugin.Log.LogInfo($"[Bot] 📜 Click Quest Button (Priority): '{questBtn.gameObject.name}'");
                         LogStateAction($"CLICK NPC_QUEST_BTN: {questBtn.gameObject.name}");
+                        _botInvoking = true;
                         questBtn.onClick.Invoke();
+                        _botInvoking = false;
                         return;
                     }
                     if (talkBtn != null)
                     {
                         Plugin.Log.LogInfo($"[Bot] 💬 Click Talk/Next: '{talkBtn.gameObject.name}'");
                         LogStateAction($"CLICK NPC_TALK_BTN: {talkBtn.gameObject.name}");
+                        _botInvoking = true;
                         talkBtn.onClick.Invoke();
+                        _botInvoking = false;
                         return;
                     }
                     if (anyBtn != null)
                     {
                         Plugin.Log.LogInfo($"[Bot] 👆 Click Any Button (fallback): '{anyBtn.gameObject.name}'");
                         LogStateAction($"CLICK NPC_ANY_BTN: {anyBtn.gameObject.name}");
+                        _botInvoking = true;
                         anyBtn.onClick.Invoke();
+                        _botInvoking = false;
                         return;
                     }
 
