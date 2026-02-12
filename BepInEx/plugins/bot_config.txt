@@ -1,0 +1,24 @@
+# AutoQuest Bot Config
+# Cấu hình bot tự động
+
+# Chế độ headless (tắt đồ họa để tiết kiệm tài nguyên)
+headless_mode = true
+
+# Giới hạn FPS (càng thấp càng nhẹ máy)
+target_fps = 10
+
+# Auto quest
+auto_quest = true
+
+# Auto battle (tự động chiến đấu)
+auto_battle = true
+
+# Random delay giữa action (giây) - anti-ban
+min_delay = 0.5
+max_delay = 2.0
+
+# Thời gian chạy tối đa (giờ) - 0 = không giới hạn
+max_runtime_hours = 8
+
+# Device ID giả (mỗi acc 1 ID khác nhau) - anti-ban
+spoof_device_id = true

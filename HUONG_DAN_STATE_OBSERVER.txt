@@ -1,0 +1,134 @@
+================================================================================
+  HƯỚNG DẪN SỬ DỤNG STATE OBSERVER - Ghi Log Trạng Thái Game
+================================================================================
+
+📌 MỤC ĐÍCH:
+  State Observer tự động ghi lại mọi thay đổi trạng thái game (nhiệm vụ,
+  vị trí, bước quest...) vào file log. File log này sẽ được dùng để phân tích
+  và tạo code tự động hóa (Phase 2).
+
+================================================================================
+  CÁCH HOẠT ĐỘNG
+================================================================================
+
+  ✅ State Observer đã được tích hợp SẴN trong BotController.cs
+  ✅ Không cần uncomment hay chỉnh sửa gì thêm
+  ✅ Tự động bật khi game khởi động
+  ✅ Ghi log bằng thread riêng → KHÔNG làm giảm FPS
+
+================================================================================
+  CÁCH SỬ DỤNG (từng bước)
+================================================================================
+
+  BƯỚC 1: Đảm bảo Plugin đã được build
+  ────────────────────────────────────
+    - Mở Terminal trong thư mục AutoQuestPlugin
+    - Chạy lệnh: dotnet build
+    - Kiểm tra: 0 Error(s)
+    - File DLL sẽ tự động copy vào BepInEx\plugins\
+
+  BƯỚC 2: Tắt game (nếu đang mở)
+  ────────────────────────────────
+    - PHẢI tắt game hoàn toàn trước khi mở lại
+    - Nếu dùng Launcher: Bấm "Dừng Hết" rồi đợi 5 giây
+
+  BƯỚC 3: Mở lại game qua Launcher
+  ────────────────────────────────
+    - Chọn tài khoản → Bấm "▶ Chạy"
+    - Đợi game vào MainGameScene
+
+  BƯỚC 4: Xác nhận State Observer đã bật
+  ────────────────────────────────────
+    - Mở file: BepInEx\LogOutput.log
+    - Tìm dòng:  [StateObserver] ✅ Recording to: ...StateLogs/session_...
+    - Nếu THẤY dòng này → State Observer đang hoạt động ✅
+    - Nếu KHÔNG thấy → Kiểm tra lại bước 1 (build)
+
+  BƯỚC 5: Thực hiện hành động trong game
+  ────────────────────────────────────
+    - Chơi game bình thường: nhận quest, đánh quái, nói chuyện NPC...
+    - Mỗi khi trạng thái thay đổi (quest mới, bước mới, map mới),
+      hệ thống sẽ tự ghi 1 dòng log
+    - Chơi khoảng 1-5 phút để có đủ dữ liệu
+
+  BƯỚC 6: Lấy file log
+  ────────────────────
+    Đường dẫn file log:
+    
+    c:\Users\Dell\Documents\vu tru dai chien\2026_02_11_OpenTest_015\
+    BepInEx\plugins\StateLogs\session_YYYYMMDD_HHMMSS.txt
+
+    Ví dụ: session_20260212_181800.txt
+
+  BƯỚC 7: Gửi file log
+  ────────────────────
+    - Copy nội dung file log
+    - Dán vào chat với AI
+    - AI sẽ phân tích và tạo code tự động hóa
+
+================================================================================
+  ĐỊNH DẠNG FILE LOG
+================================================================================
+
+  Mỗi dòng log có format:
+
+  [HH:mm:ss.fff] | State_ID:xxx | Step_Index:x | Location:xxx | Action_Target:xxx | Quest:xxx
+
+  Ví dụ:
+  [18:15:23.456] | State_ID:123456 | Step_Index:3 | Location:Ngoại Ô Maima | Action_Target:None | Quest:Tiêu diệt 5 quái vật (3/5)
+
+  Giải thích:
+    - State_ID    : Hash code của quest text (thay đổi khi quest đổi)
+    - Step_Index  : Bước hiện tại (ví dụ: 3/5 → Step_Index = 3)
+    - Location    : Tên map/khu vực hiện tại
+    - Action_Target: Mục tiêu hành động (hiện tại = "None")
+    - Quest       : Nội dung quest đầy đủ
+
+================================================================================
+  CÁC FILE LIÊN QUAN
+================================================================================
+
+  📁 AutoQuestPlugin\BotController.cs
+     → Chứa toàn bộ logic ghi log (inline, không cần file StateObserver.cs)
+
+  📁 BepInEx\plugins\AutoQuestPlugin.dll
+     → File plugin đã build (game load file này)
+
+  📁 BepInEx\plugins\StateLogs\
+     → Thư mục chứa các file log (tự động tạo)
+
+  📁 BepInEx\LogOutput.log
+     → Log hệ thống BepInEx (kiểm tra lỗi ở đây)
+
+================================================================================
+  KHẮC PHỤC SỰ CỐ
+================================================================================
+
+  ❌ Không thấy thư mục StateLogs:
+     → Game chưa khởi động với plugin mới
+     → Build lại: dotnet build
+     → Tắt game và mở lại
+
+  ❌ LogOutput.log có dòng "❌ Init Error":
+     → Có lỗi khi tạo thư mục/file
+     → Kiểm tra quyền ghi vào thư mục BepInEx\plugins\
+
+  ❌ File log trống (0 bytes):
+     → Quest text chưa thay đổi (chơi thêm, nhận quest mới)
+     → Kiểm tra ShortMissionPanel có hiển thị trong game không
+
+  ❌ Game crash khi khởi động:
+     → Build lại plugin: dotnet build
+     → Kiểm tra 0 Error(s) trước khi chạy game
+
+================================================================================
+  PHASE 2: TỰ ĐỘNG HÓA (sau khi có log)
+================================================================================
+
+  Sau khi gửi file log cho AI:
+  1. AI phân tích chuỗi hành động từ log
+  2. AI tạo code C# tự động thực hiện các bước đó
+  3. Code được tích hợp vào BotController.cs
+  4. Bot tự động chạy quest theo kịch bản đã ghi
+
+================================================================================

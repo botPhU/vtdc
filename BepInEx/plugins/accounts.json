@@ -1,0 +1,51 @@
+{
+  "accounts": [
+    {
+      "name": "",
+      "username": "phubap89",
+      "password": "0366965757",
+      "server": 0,
+      "character": 0,
+      "autoQuest": true,
+      "headless": true,
+      "running": false
+    },
+    {
+      "name": "",
+      "username": "phubap899",
+      "password": "0366965757",
+      "server": 0,
+      "character": 0,
+      "autoQuest": true,
+      "headless": true,
+      "running": false
+    },
+    {
+      "name": "",
+      "username": "testphu",
+      "password": "0366965757",
+      "server": 0,
+      "character": 0,
+      "autoQuest": true,
+      "headless": true,
+      "running": false
+    }
+  ],
+  "currentAccountIndex": 2,
+  "settings": {
+    "windowWidth": 800,
+    "windowHeight": 600,
+    "disableShadows": true,
+    "disableParticles": true,
+    "lowQuality": true,
+    "targetFps": 60,
+    "minimizeOnLaunch": true,
+    "autoCleanRAM": true,
+    "ultraLowRes": true,
+    "autoQuest": true,
+    "smartDialog": true,
+    "collectQuest": true,
+    "autoPathfind": true,
+    "gameSpeed": 10
+  }
+}

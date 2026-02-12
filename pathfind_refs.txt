@@ -1,0 +1,6 @@
+﻿
+Name                           Value                                 
+----                           -----                                 
+0                              _idleTime                             
+
+

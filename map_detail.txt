@@ -1,0 +1,126 @@
+﻿61:     â†’ Component: DependGameStateManager
+62: [GameObject] MiniMapCamera (active=True)
+63:   â†’ Component: UnityEngine.Transform
+64:   â†’ Component: UnityEngine.Camera
+65:   â†’ Component: UnityEngine.Rendering.Universal.UniversalAdditionalCameraData
+66:   â†’ Component: MiniMapCamera
+67: [GameObject] Main Camera (active=True)
+---
+65:   â†’ Component: UnityEngine.Rendering.Universal.UniversalAdditionalCameraData
+66:   â†’ Component: MiniMapCamera
+67: [GameObject] Main Camera (active=True)
+68:   â†’ Component: UnityEngine.Transform
+69:   â†’ Component: UnityEngine.Camera
+70:   â†’ Component: UnityEngine.AudioListener
+71:   â†’ Component: UnityEngine.Rendering.Universal.UniversalAdditionalCameraData
+---
+588:       â†’ Component: MyButtonNoText
+589:   [GameObject] ObjectMapInfoBarManager (active=True)
+590:     â†’ Component: UnityEngine.RectTransform
+591:     â†’ Component: ObjectMapInfoBarManager
+592:     [GameObject] ItemInfoBar (active=False)
+593:       â†’ Component: UnityEngine.RectTransform
+594:       â†’ Component: ItemInfoBar
+---
+590:     â†’ Component: UnityEngine.RectTransform
+591:     â†’ Component: ObjectMapInfoBarManager
+592:     [GameObject] ItemInfoBar (active=False)
+593:       â†’ Component: UnityEngine.RectTransform
+594:       â†’ Component: ItemInfoBar
+595:       [GameObject] Name (active=True)
+596:         â†’ Component: UnityEngine.RectTransform
+---
+682:         â†’ Component: UnityEngine.RectTransform
+683:     [GameObject] MiniMap (active=True)
+684:       â†’ Component: UnityEngine.RectTransform
+685:       â†’ Component: MiniMap
+686:       [GameObject] Background (active=True)
+687:         â†’ Component: UnityEngine.RectTransform
+688:         â†’ Component: UnityEngine.CanvasRenderer
+---
+684:       â†’ Component: UnityEngine.RectTransform
+685:       â†’ Component: MiniMap
+686:       [GameObject] Background (active=True)
+687:         â†’ Component: UnityEngine.RectTransform
+688:         â†’ Component: UnityEngine.CanvasRenderer
+689:         â†’ Component: UnityEngine.UI.Image
+690:       [GameObject] MapName (active=True)
+---
+689:         â†’ Component: UnityEngine.UI.Image
+690:       [GameObject] MapName (active=True)
+691:         â†’ Component: UnityEngine.RectTransform
+692:       [GameObject] ZoneObject (active=True)
+693:         â†’ Component: UnityEngine.RectTransform
+694:       [GameObject] ExpandButton (active=True)
+695:         â†’ Component: UnityEngine.RectTransform
+---
+691:         â†’ Component: UnityEngine.RectTransform
+692:       [GameObject] ZoneObject (active=True)
+693:         â†’ Component: UnityEngine.RectTransform
+694:       [GameObject] ExpandButton (active=True)
+695:         â†’ Component: UnityEngine.RectTransform
+696:         â†’ Component: UnityEngine.CanvasRenderer
+697:         â†’ Component: UnityEngine.UI.Image
+---
+1119:     â†’ Component: UnityEngine.MeshFilter
+1120:   [GameObject] MapName (active=True)
+1121:     â†’ Component: UnityEngine.RectTransform
+1122:     â†’ Component: UnityEngine.MeshRenderer
+1123:     â†’ Component: TMPro.TextMeshPro
+1124:     â†’ Component: UnityEngine.Rendering.SortingGroup
+1125:     â†’ Component: MapNameAnimation
+---
+1124:     â†’ Component: UnityEngine.Rendering.SortingGroup
+1125:     â†’ Component: MapNameAnimation
+1126:     â†’ Component: UnityEngine.MeshFilter
+1127:   [GameObject] MinimapName (active=True)
+1128:     â†’ Component: UnityEngine.RectTransform
+1129:     â†’ Component: UnityEngine.MeshRenderer
+1130:     â†’ Component: TMPro.TextMeshPro
+---
+1126:     â†’ Component: UnityEngine.MeshFilter
+1127:   [GameObject] MinimapName (active=True)
+1128:     â†’ Component: UnityEngine.RectTransform
+1129:     â†’ Component: UnityEngine.MeshRenderer
+1130:     â†’ Component: TMPro.TextMeshPro
+1131:     â†’ Component: UnityEngine.MeshFilter
+1132:   [GameObject] MinimapIcon (active=True)
+---
+1131:     â†’ Component: UnityEngine.MeshFilter
+1132:   [GameObject] MinimapIcon (active=True)
+1133:     â†’ Component: UnityEngine.Transform
+1134:     â†’ Component: UnityEngine.SpriteRenderer
+1135: [GameObject] Gateway(Clone) (active=True)
+1136:   â†’ Component: UnityEngine.Transform
+1137:   â†’ Component: MapGateway
+---
+1147:     â†’ Component: UnityEngine.MeshFilter
+1148:   [GameObject] MapName (active=True)
+1149:     â†’ Component: UnityEngine.RectTransform
+1150:     â†’ Component: UnityEngine.MeshRenderer
+1151:     â†’ Component: TMPro.TextMeshPro
+1152:     â†’ Component: UnityEngine.Rendering.SortingGroup
+1153:     â†’ Component: MapNameAnimation
+---
+1152:     â†’ Component: UnityEngine.Rendering.SortingGroup
+1153:     â†’ Component: MapNameAnimation
+1154:     â†’ Component: UnityEngine.MeshFilter
+1155:   [GameObject] MinimapName (active=True)
+1156:     â†’ Component: UnityEngine.RectTransform
+1157:     â†’ Component: UnityEngine.MeshRenderer
+1158:     â†’ Component: TMPro.TextMeshPro
+---
+1154:     â†’ Component: UnityEngine.MeshFilter
+1155:   [GameObject] MinimapName (active=True)
+1156:     â†’ Component: UnityEngine.RectTransform
+1157:     â†’ Component: UnityEngine.MeshRenderer
+1158:     â†’ Component: TMPro.TextMeshPro
+1159:     â†’ Component: UnityEngine.MeshFilter
+1160:   [GameObject] MinimapIcon (active=True)
+---
+1159:     â†’ Component: UnityEngine.MeshFilter
+1160:   [GameObject] MinimapIcon (active=True)
+1161:     â†’ Component: UnityEngine.Transform
+1162:     â†’ Component: UnityEngine.SpriteRenderer
+1163: 
+---

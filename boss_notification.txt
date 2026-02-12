@@ -1,0 +1,44 @@
+[18:04:03] (HT): Imperfect Cellion vừa xuất hiện tại Vùng Đất Hoang Tàn
+Map: Vùng Đất Hoang Tàn
+Source: ChatPanel
+---
+[18:04:23] (HT): Semi-Perfect Cellion vừa xuất hiện tại Cao Nguyên Yunbit
+Map: Cao Nguyên Yunbit
+Source: ChatPanel
+---
+[18:04:43] (HT):  Imperfect Cellion vừa xuất hiện tại Vùng Đất Hoang Tàn
+Map: Vùng Đất Hoang Tàn
+Source: SystemChat
+---
+[18:04:53] (HT): Android 20 vừa xuất hiện tại Khu Phố Đỏ Lửa
+Map: Khu Phố Đỏ Lửa
+Source: ChatPanel
+---
+[18:04:58] (HT): Imperfect Cellion vừa xuất hiện tại Vùng Đất Hoang Tàn
+Map: Vùng Đất Hoang Tàn
+Source: ChatPanel
+---
+[18:05:03] (HT):  Semi-Perfect Cellion vừa xuất hiện tại Cao Nguyên Yunbit
+Map: Cao Nguyên Yunbit
+Source: SystemChat
+---
+[18:05:03] (HT): Imperfect Cellion vừa xuất hiện tại Vùng Đất Hoang Tàn
+Map: Vùng Đất Hoang Tàn
+Source: ChatPanel
+---
+[18:05:03] (HT): Dodoria vừa xuất hiện tại Ngọn Đồi Maima
+Map: Ngọn Đồi Maima
+Source: ChatPanel
+---
+[18:05:08] (HT):  Semi-Perfect Cellion vừa xuất hiện tại Cao Nguyên Yunbit
+Map: Cao Nguyên Yunbit
+Source: SystemChat
+---
+[18:05:08] (HT): Dodoria vừa xuất hiện tại Ngọn Đồi Maima
+Map: Ngọn Đồi Maima
+Source: ChatPanel
+---
+[18:05:18] (HT): Semi-Perfect Cellion vừa xuất hiện tại Vùng Đất Hoang Tàn
+Map: Vùng Đất Hoang Tàn
+Source: ChatPanel
+---

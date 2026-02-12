@@ -1,0 +1,48 @@
+# ======================== GAME FILES ========================
+# Game binaries (rất lớn, không push)
+*.exe
+*.dll
+*.pdb
+*.zip
+
+# Game data
+Vũ Trụ Đại Chiến_Data/
+dotnet/
+.doorstop_version
+
+# ======================== BUILD ========================
+AutoQuestPlugin/bin/
+AutoQuestPlugin/obj/
+tools/AccountLauncher/bin/
+tools/AccountLauncher/obj/
+tools/AccountLauncher/publish/
+tools/AccountLauncher/publish_sc/
+tools/LauncherV3/
+
+# ======================== BEPINEX ========================
+# Chỉ giữ config, bỏ hết runtime files
+BepInEx/core/
+BepInEx/interop/
+BepInEx/cache/
+BepInEx/patchers/
+BepInEx/unity-libs/
+BepInEx/plugins/*.dll
+BepInEx/plugins/StateLogs/
+BepInEx/plugins/inspector_logs/
+BepInEx/plugins/deep_inspections/
+BepInEx/plugins/bot_status/
+BepInEx/plugins/bot_log_filtered.txt
+BepInEx/*.log
+
+# ======================== LOGS & TEMP ========================
+*.log
+build_log.txt
+patch_result.txt
+verify*.txt
+preloader_*.log
+
+# ======================== IDE ========================
+.vs/
+.vscode/
+*.user
+*.suo

@@ -1,0 +1,30 @@
+﻿  [GameObject] DropEffectMapManager (active=True)
+    â†’ Component: DropEffectMapManager
+[GameObject] MiniMapCamera (active=True)
+  â†’ Component: MiniMapCamera
+[GameObject] MapViewCamera (active=False)
+  â†’ Component: MapViewCamera
+  [GameObject] SafetyArea (active=True)
+    â†’ Component: SafeAreaHandler
+      [GameObject] Text Area (active=True)
+  [GameObject] ObjectMapInfoBarManager (active=True)
+    â†’ Component: ObjectMapInfoBarManager
+    â†’ Component: SafeAreaHandler
+    [GameObject] MiniMap (active=True)
+      â†’ Component: MiniMap
+      [GameObject] MapName (active=True)
+      [GameObject] ZoneObject (active=True)
+        â†’ Component: ClanMemberZonePanel
+  â†’ Component: Map
+    [GameObject] ColorMap2 (active=True)
+    [GameObject] Tilemap (active=True)
+  [GameObject] MapView (active=True)
+  â†’ Component: MapGateway
+  [GameObject] MapName (active=True)
+    â†’ Component: MapNameAnimation
+  [GameObject] MinimapName (active=True)
+  [GameObject] MinimapIcon (active=True)
+  â†’ Component: MapGateway
+  [GameObject] MapName (active=True)
+    â†’ Component: MapNameAnimation
+  [GameObject] MinimapName (active=True)
