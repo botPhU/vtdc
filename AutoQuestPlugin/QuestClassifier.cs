@@ -79,6 +79,8 @@ namespace AutoQuestPlugin
             // MOVE quests (dùng PRESS_MOVEMENT_KEYS — bot sẽ thử ShortMission trước, fallback arrow keys)
             ("Băng qua",     QuestType.MOVE,     QuestAction.PRESS_MOVEMENT_KEYS,     0.95f),
             ("Tiến đến",     QuestType.MOVE,     QuestAction.PRESS_MOVEMENT_KEYS,     0.95f),
+            ("Làm quen",     QuestType.MOVE,     QuestAction.PRESS_MOVEMENT_KEYS,     0.90f),
+            ("di chuyển",    QuestType.MOVE,     QuestAction.PRESS_MOVEMENT_KEYS,     0.90f),
             
             // TALK quests (NPC interaction)
             ("Báo cáo với",  QuestType.TALK,     QuestAction.PATHFIND_AND_TALK_NPC,   0.90f),
