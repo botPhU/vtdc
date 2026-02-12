@@ -849,7 +849,13 @@ namespace AutoQuestPlugin
 
                 _pathfindTimer += Time.deltaTime;
                 // Fix: Nếu _killQuestDone (vừa đánh xong quái), cho phép pathfind ngay cả khi chưa idle (đang chạy/đánh)
-                if (_pathfindTimer >= _pathfindInterval && (_idleTime >= _idleThreshold || _killQuestDone) && _pathfindCooldown <= 0 && !dialogOpen)
+                // NEW: Skip pathfind nếu quest đang là PRESS_MOVEMENT_KEYS (tutorial) hoặc PRESS_SKILL_KEY
+                bool isSpecialAction = _currentQuestInfo != null && 
+                                      (_currentQuestInfo.Action == QuestAction.PRESS_MOVEMENT_KEYS || 
+                                       _currentQuestInfo.Action == QuestAction.PRESS_SKILL_KEY);
+
+                if (_pathfindTimer >= _pathfindInterval && (_idleTime >= _idleThreshold || _killQuestDone) 
+                    && _pathfindCooldown <= 0 && !dialogOpen && !isSpecialAction)
                 {
                     _pathfindTimer = 0f;
                     TriggerAutoPathfind();
@@ -899,32 +905,8 @@ namespace AutoQuestPlugin
                 if (_tutorialMoveTimer >= _tutorialMoveInterval)
                 {
                     _tutorialMoveTimer = 0f;
-                    // Thử ShortMissionPanel trước
-                    bool shortMissionWorked = false;
-                    try
-                    {
-                        if (_shortMissionPanel == null)
-                            _shortMissionPanel = FindSingletonByType("ShortMissionPanel");
-                        if (_shortMissionPanel != null && _shortMissionPanel.gameObject.activeSelf)
-                        {
-                            var smBtn = _shortMissionPanel.gameObject.GetComponentInChildren<Button>(true);
-                            if (smBtn != null && smBtn.gameObject.activeSelf)
-                            {
-                                _botInvoking = true;
-                                smBtn.onClick.Invoke();
-                                _botInvoking = false;
-                                shortMissionWorked = true;
-                                LogStateAction($"TUTORIAL_MOVE: ShortMissionPanel clicked (quest={_currentQuestInfo.QuestText})");
-                            }
-                        }
-                    }
-                    catch { }
-
-                    // Fallback: simulate directional world click
-                    if (!shortMissionWorked)
-                    {
-                        TryTutorialMovement();
-                    }
+                    // Force using Key Press (TryTutorialMovement) - không thử ShortMissionPanel nữa vì nó là trap ở tutorial
+                    TryTutorialMovement();
                 }
             }
 

@@ -76,11 +76,15 @@ namespace AutoQuestPlugin
             // KILL quests (highest priority — có số/số)
             ("Tiêu diệt",   QuestType.KILL,     QuestAction.WAIT_KILL,               0.95f),
             
-            // MOVE quests (dùng PRESS_MOVEMENT_KEYS — bot sẽ thử ShortMission trước, fallback arrow keys)
-            ("Băng qua",     QuestType.MOVE,     QuestAction.PRESS_MOVEMENT_KEYS,     0.95f),
-            ("Tiến đến",     QuestType.MOVE,     QuestAction.PRESS_MOVEMENT_KEYS,     0.95f),
-            ("Làm quen",     QuestType.MOVE,     QuestAction.PRESS_MOVEMENT_KEYS,     0.90f),
-            ("di chuyển",    QuestType.MOVE,     QuestAction.PRESS_MOVEMENT_KEYS,     0.90f),
+            // MOVE quests
+            // Normal move (ShortMission pathfind)
+            ("Băng qua",     QuestType.MOVE,     QuestAction.CLICK_SHORTMISSION,      0.95f),
+            ("Tiến đến",     QuestType.MOVE,     QuestAction.CLICK_SHORTMISSION,      0.95f),
+            ("Tìm",          QuestType.MOVE,     QuestAction.CLICK_SHORTMISSION,      0.90f),
+            ("Di chuyển",    QuestType.MOVE,     QuestAction.CLICK_SHORTMISSION,      0.90f), // Di chuyển theo hướng... (Auto)
+            
+            // Tutorial move (Key press mandatory)
+            ("Làm quen",     QuestType.MOVE,     QuestAction.PRESS_MOVEMENT_KEYS,     0.95f),
             
             // TALK quests (NPC interaction)
             ("Báo cáo với",  QuestType.TALK,     QuestAction.PATHFIND_AND_TALK_NPC,   0.90f),
@@ -376,7 +380,7 @@ namespace AutoQuestPlugin
         {
             switch (type)
             {
-                case QuestType.MOVE: return QuestAction.PRESS_MOVEMENT_KEYS;
+                case QuestType.MOVE: return QuestAction.CLICK_SHORTMISSION;
                 case QuestType.TALK: return QuestAction.PATHFIND_AND_TALK_NPC;
                 case QuestType.KILL: return QuestAction.WAIT_KILL;
                 case QuestType.USE_ITEM: return QuestAction.PRESS_SKILL_KEY;
