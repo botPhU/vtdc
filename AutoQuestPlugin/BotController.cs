@@ -1916,13 +1916,16 @@ namespace AutoQuestPlugin
                         if (tmp != null) btnText = tmp.text ?? "";
                     } catch {}
                     string path = GetPath(btn.transform);
-                    bool isActive = btn.gameObject.activeSelf;
 
                     // Capture local copies for closure
                     string capName = btnName;
                     string capText = btnText;
                     string capPath = path;
 
+                    // XÓA tất cả listener cũ trước khi add mới (tránh tích lũy duplicate)
+                    // Lưu ý: điều này cũng xóa listener game gốc, nhưng onClick.Invoke() 
+                    // từ bot sẽ vẫn hoạt động vì bot gọi trực tiếp
+                    // Chỉ log khi USER click (không phải bot invoke)
                     btn.onClick.AddListener((UnityEngine.Events.UnityAction)(() =>
                     {
                         try
@@ -1938,7 +1941,7 @@ namespace AutoQuestPlugin
                         catch { }
                     }));
 
-                    Plugin.Log.LogInfo($"[InputRec] Hooked button: {btnName} ({btnText}) active={isActive}");
+                    Plugin.Log.LogInfo($"[InputRec] Hooked button: {btnName} ({btnText})");
                 }
             }
             catch (Exception ex)
@@ -2455,41 +2458,9 @@ namespace AutoQuestPlugin
 
                 }
 
-                // === 2. Tìm các popup khác (NotifyPopup, RewardPanel, v.v.) ===
-                var popupCanvas = GameObject.Find("PopupCanvas");
-                if (popupCanvas != null)
-                {
-                    // Scan buttons trên PopupCanvas cho nút OK/Đồng ý/Xác nhận
-                    var popupBtns = popupCanvas.GetComponentsInChildren<Button>(false);
-                    foreach (var btn in popupBtns)
-                    {
-                        if (btn == null || !btn.gameObject.activeSelf || !btn.interactable) continue;
-                        string btnName = btn.gameObject.name ?? "";
-                        
-                        // Skip NpcInteractPanel buttons (đã xử lý ở trên)
-                        if (btnName == "CloseButton" || btnName == "NextPlace" || btnName == "InteractPanelButton")
-                            continue;
-
-                        // Check text labels
-                        var tmpTexts = btn.gameObject.GetComponentsInChildren<TextMeshProUGUI>(false);
-                        foreach (var tmp in tmpTexts)
-                        {
-                            if (tmp == null) continue;
-                            string text = tmp.text ?? "";
-                            if (string.IsNullOrWhiteSpace(text)) continue;
-
-                            if (text.Contains("Nhiệm vụ") || text.Contains("Nhận") ||
-                                text.Contains("Đồng ý") || text.Contains("Xác nhận") ||
-                                text.Contains("Hoàn thành") || text.Contains("Tiếp tục") ||
-                                text.Contains("OK") || text.Contains("Accept"))
-                            {
-                                btn.onClick.Invoke();
-                                Plugin.Log.LogInfo($"[Bot] 📜 Popup: Clicked '{btnName}' (text='{text}')");
-                                return;
-                            }
-                        }
-                    }
-                }
+                // === 2. PopupCanvas scanning REMOVED ===
+                // Trước đây bot scan toàn bộ PopupCanvas → click nhầm vào menu người chơi
+                // Giờ chỉ xử lý NpcInteractPanel ở trên, popup dismiss do MODULE 4 xử lý
             }
             catch (Exception ex)
             {
