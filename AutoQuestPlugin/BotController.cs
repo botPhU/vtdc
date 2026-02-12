@@ -211,6 +211,11 @@ namespace AutoQuestPlugin
         private string _lastNpcName = "";  // Tên NPC đang tương tác
         private bool _botInvoking = false;  // Flag: true khi BOT gọi onClick.Invoke() (không phải user click)
 
+        // AI Quest Classifier
+        private QuestClassifier _questClassifier = null;
+        private QuestInfo _currentQuestInfo = null;
+        private string _prevClassifiedQuest = "";
+
         // Command console (Launcher ↔ Bot communication)
         private float _cmdCheckTimer = 0f;
         private float _cmdCheckInterval = 2f; // Check mỗi 2s
@@ -298,6 +303,28 @@ namespace AutoQuestPlugin
                 _stateWriteThread = new Thread(StateLogWriteLoop) { IsBackground = true };
                 _stateWriteThread.Start();
                 Plugin.Log.LogInfo($"[StateObserver] ✅ Recording to: {_stateLogPath}");
+
+                // Init Quest Classifier (học từ log cũ)
+                _questClassifier = new QuestClassifier(pluginDir);
+                
+                // Học từ tất cả session log cũ
+                int totalLearned = 0;
+                try
+                {
+                    var logFiles = Directory.GetFiles(stateDir, "session_*.txt");
+                    foreach (var logFile in logFiles)
+                    {
+                        if (logFile == _stateLogPath) continue; // Skip file đang ghi
+                        int learned = _questClassifier.LearnFromLogFile(logFile);
+                        totalLearned += learned;
+                    }
+                    Plugin.Log.LogInfo($"[QuestAI] ✅ Learned {totalLearned} patterns from {logFiles.Length} log files");
+                    Plugin.Log.LogInfo($"[QuestAI] Stats: {_questClassifier.GetStats()}");
+                }
+                catch (Exception lex)
+                {
+                    Plugin.Log.LogWarning($"[QuestAI] Learn from logs error: {lex.Message}");
+                }
             }
             catch (Exception ex)
             {
@@ -1099,6 +1126,20 @@ namespace AutoQuestPlugin
                         _prevStepIndex = stepIdx;
                         _prevLocation = loc;
                         _prevActionTarget = target;
+
+                        // === AI QUEST CLASSIFICATION ===
+                        if (_questClassifier != null && !string.IsNullOrEmpty(qText) && qText != _prevClassifiedQuest)
+                        {
+                            // Quest đã thay đổi → classify và log
+                            string actionsTaken = _currentQuestInfo != null ? _currentQuestInfo.Action.ToString() : "";
+                            _questClassifier.OnQuestChanged(qText, actionsTaken);
+                            _currentQuestInfo = _questClassifier.Classify(qText);
+                            _prevClassifiedQuest = qText;
+
+                            // Log classification result
+                            LogStateAction($"QUEST_CLASSIFIED: {_currentQuestInfo}");
+                            Plugin.Log.LogInfo($"[QuestAI] 🧠 {_currentQuestInfo}");
+                        }
                     }
                 }
                 catch { }

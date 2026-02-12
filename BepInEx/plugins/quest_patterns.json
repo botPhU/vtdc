@@ -1,0 +1,109 @@
+{
+    "totalSessions": 1,
+    "lastUpdated": "2026-02-12 20:35:00",
+    "patterns": [
+        {
+            "keyword": "Băng qua",
+            "type": "MOVE",
+            "actions": [
+                "CLICK_SHORTMISSION",
+                "WAIT_LOCATION_CHANGE"
+            ],
+            "successRate": 1.0000,
+            "seenCount": 3
+        },
+        {
+            "keyword": "Tiến đến",
+            "type": "MOVE",
+            "actions": [
+                "CLICK_SHORTMISSION",
+                "WAIT_LOCATION_CHANGE"
+            ],
+            "successRate": 1.0000,
+            "seenCount": 5
+        },
+        {
+            "keyword": "Báo cáo với",
+            "type": "TALK",
+            "actions": [
+                "PATHFIND",
+                "OPEN_NPC_DIALOG",
+                "CLICK_QUEST_BTN"
+            ],
+            "successRate": 1.0000,
+            "seenCount": 4
+        },
+        {
+            "keyword": "Gặp",
+            "type": "TALK",
+            "actions": [
+                "PATHFIND",
+                "OPEN_NPC_DIALOG",
+                "CLICK_QUEST_BTN"
+            ],
+            "successRate": 0.8750,
+            "seenCount": 8
+        },
+        {
+            "keyword": "Dắt",
+            "type": "TALK",
+            "actions": [
+                "PATHFIND",
+                "OPEN_NPC_DIALOG",
+                "CLICK_QUEST_BTN"
+            ],
+            "successRate": 1.0000,
+            "seenCount": 2
+        },
+        {
+            "keyword": "Giao",
+            "type": "TALK",
+            "actions": [
+                "PATHFIND",
+                "OPEN_NPC_DIALOG",
+                "CLICK_QUEST_BTN"
+            ],
+            "successRate": 1.0000,
+            "seenCount": 2
+        },
+        {
+            "keyword": "Tiêu diệt",
+            "type": "KILL",
+            "actions": [
+                "WAIT_KILL"
+            ],
+            "successRate": 1.0000,
+            "seenCount": 3
+        },
+        {
+            "keyword": "Tìm lại",
+            "type": "COLLECT",
+            "actions": [
+                "CLICK_SHORTMISSION",
+                "WAIT_PICKUP"
+            ],
+            "successRate": 1.0000,
+            "seenCount": 1
+        },
+        {
+            "keyword": "Dùng Thẻ",
+            "type": "USE_ITEM",
+            "actions": [
+                "WAIT_USER"
+            ],
+            "successRate": 1.0000,
+            "seenCount": 1
+        },
+        {
+            "keyword": "Nhận",
+            "type": "TALK",
+            "actions": [
+                "PATHFIND",
+                "OPEN_NPC_DIALOG",
+                "CLICK_QUEST_BTN"
+            ],
+            "successRate": 1.0000,
+            "seenCount": 2
+        }
+    ]
+}
