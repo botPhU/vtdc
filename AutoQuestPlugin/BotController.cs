@@ -216,6 +216,11 @@ namespace AutoQuestPlugin
         private QuestInfo _currentQuestInfo = null;
         private string _prevClassifiedQuest = "";
 
+        // Tutorial movement (khi ShortMissionPanel không khả dụng)
+        private float _tutorialMoveTimer = 0f;
+        private float _tutorialMoveInterval = 1.5f;  // Thử di chuyển mỗi 1.5s
+        private int _tutorialMoveDir = 0;             // Hướng di chuyển (0=right, 1=up, 2=left, 3=down)
+
         // Command console (Launcher ↔ Bot communication)
         private float _cmdCheckTimer = 0f;
         private float _cmdCheckInterval = 2f; // Check mỗi 2s
@@ -878,6 +883,44 @@ namespace AutoQuestPlugin
                 {
                     _questLogTimer = 0f;
                     LogQuestStatus();
+                }
+            }
+
+            // ======================== MODULE 1B: TUTORIAL MOVEMENT (AI-driven) ========================
+            // Khi quest là MOVE nhưng ShortMissionPanel không hoạt động (tutorial đầu game)
+            if (_autoQuestEnabled && inGame && _currentQuestInfo != null 
+                && _currentQuestInfo.Action == QuestAction.PRESS_MOVEMENT_KEYS)
+            {
+                _tutorialMoveTimer += Time.deltaTime;
+                if (_tutorialMoveTimer >= _tutorialMoveInterval)
+                {
+                    _tutorialMoveTimer = 0f;
+                    // Thử ShortMissionPanel trước
+                    bool shortMissionWorked = false;
+                    try
+                    {
+                        if (_shortMissionPanel == null)
+                            _shortMissionPanel = FindSingletonByType("ShortMissionPanel");
+                        if (_shortMissionPanel != null && _shortMissionPanel.gameObject.activeSelf)
+                        {
+                            var smBtn = _shortMissionPanel.gameObject.GetComponentInChildren<Button>(true);
+                            if (smBtn != null && smBtn.gameObject.activeSelf)
+                            {
+                                _botInvoking = true;
+                                smBtn.onClick.Invoke();
+                                _botInvoking = false;
+                                shortMissionWorked = true;
+                                LogStateAction($"TUTORIAL_MOVE: ShortMissionPanel clicked (quest={_currentQuestInfo.QuestText})");
+                            }
+                        }
+                    }
+                    catch { }
+
+                    // Fallback: simulate directional world click
+                    if (!shortMissionWorked)
+                    {
+                        TryTutorialMovement();
+                    }
                 }
             }
 
@@ -2160,6 +2203,110 @@ namespace AutoQuestPlugin
             catch (Exception ex)
             {
                 Plugin.Log.LogWarning($"[Bot] Auto Pathfind error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Tutorial movement: khi quest yêu cầu di chuyển nhưng ShortMissionPanel không khả dụng.
+        /// Simulate di chuyển bằng cách:
+        /// 1. Tìm Joystick/Pad UI trong game → invoke
+        /// 2. Nếu không có → tạo synthetic PointerEvent click vào game world ở vị trí hướng đi
+        /// 3. Xoay vòng hướng (right→up→left→down) để tìm đường tự động
+        /// </summary>
+        private void TryTutorialMovement()
+        {
+            try
+            {
+                // === 1. Thử tìm Joystick/MovePad trong UI (game mobile thường có) ===
+                string[] joystickNames = { "Joystick", "JoystickPad", "MoveJoystick", "MovePad", "VirtualJoystick", "TouchPad" };
+                foreach (var jName in joystickNames)
+                {
+                    try
+                    {
+                        var joyObj = GameObject.Find(jName);
+                        if (joyObj != null && joyObj.activeSelf)
+                        {
+                            // Tìm thấy joystick → thử invoke drag event
+                            Plugin.Log.LogInfo($"[Bot] 🕹️ Found joystick UI: {jName}");
+                            LogStateAction($"TUTORIAL_MOVE: Found joystick {jName}");
+                            
+                            // Simulate drag trên joystick bằng PointerEventData
+                            var eventSystem = EventSystem.current;
+                            if (eventSystem != null)
+                            {
+                                var pointerData = new PointerEventData(eventSystem);
+                                
+                                // Drag sang phải (hướng mặc định)
+                                Vector2 joyCenter = joyObj.transform.position;
+                                float dragDist = 50f;
+                                Vector2[] dirs = {
+                                    new Vector2(dragDist, 0),    // right
+                                    new Vector2(0, dragDist),    // up
+                                    new Vector2(-dragDist, 0),   // left
+                                    new Vector2(0, -dragDist)    // down
+                                };
+                                
+                                Vector2 dragDir = dirs[_tutorialMoveDir % 4];
+                                pointerData.position = joyCenter + dragDir;
+                                pointerData.delta = dragDir;
+                                
+                                ExecuteEvents.Execute(joyObj, pointerData, ExecuteEvents.dragHandler);
+                                
+                                LogStateAction($"TUTORIAL_MOVE: Joystick drag dir={_tutorialMoveDir % 4}");
+                                _tutorialMoveDir++;
+                                return;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // === 2. Fallback: Click vào game world ở vị trí hướng di chuyển ===
+                // Xoay vòng 4 hướng: right → up-right → up → left (quét thử)
+                float screenW = Screen.width;
+                float screenH = Screen.height;
+                
+                // Positions: click gần rìa màn hình theo 4 hướng
+                Vector2[] clickPositions = {
+                    new Vector2(screenW * 0.85f, screenH * 0.5f),   // right
+                    new Vector2(screenW * 0.7f, screenH * 0.75f),   // up-right  
+                    new Vector2(screenW * 0.15f, screenH * 0.5f),   // left
+                    new Vector2(screenW * 0.3f, screenH * 0.25f),   // down-left
+                };
+
+                int dirIdx = _tutorialMoveDir % clickPositions.Length;
+                Vector2 clickPos = clickPositions[dirIdx];
+
+                // Tạo synthetic pointer click event
+                var es = EventSystem.current;
+                if (es != null)
+                {
+                    var pData = new PointerEventData(es);
+                    pData.position = clickPos;
+                    
+                    // Raycast để tìm UI element tại vị trí click
+                    var results = new Il2CppSystem.Collections.Generic.List<RaycastResult>();
+                    es.RaycastAll(pData, results);
+                    
+                    if (results.Count > 0)
+                    {
+                        // Click vào object đầu tiên tìm được
+                        var target = results[0].gameObject;
+                        ExecuteEvents.Execute(target, pData, ExecuteEvents.pointerClickHandler);
+                        Plugin.Log.LogInfo($"[Bot] 🏃 Tutorial move: clicked {target.name} at ({clickPos.x:F0},{clickPos.y:F0}) dir={dirIdx}");
+                    }
+                    else
+                    {
+                        Plugin.Log.LogInfo($"[Bot] 🏃 Tutorial move: world click at ({clickPos.x:F0},{clickPos.y:F0}) dir={dirIdx}");
+                    }
+                }
+
+                LogStateAction($"TUTORIAL_MOVE: WorldClick pos=({clickPos.x:F0},{clickPos.y:F0}) dir={dirIdx}");
+                _tutorialMoveDir++;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[Bot] TryTutorialMovement error: {ex.Message}");
             }
         }
 
