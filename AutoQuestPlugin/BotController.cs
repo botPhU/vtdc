@@ -2263,103 +2263,86 @@ namespace AutoQuestPlugin
             }
         }
 
+        // Win32 API for keyboard simulation
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+
+        private const int KEYEVENTF_EXTENDEDKEY = 0x0001;
+        private const int KEYEVENTF_KEYUP = 0x0002;
+        private const byte VK_UP = 0x26;
+        private const byte VK_DOWN = 0x28;
+        private const byte VK_LEFT = 0x25;
+        private const byte VK_RIGHT = 0x27;
+        
+        // WASD
+        private const byte VK_W = 0x57;
+        private const byte VK_A = 0x41;
+        private const byte VK_S = 0x53;
+        private const byte VK_D = 0x44;
+
         /// <summary>
         /// Tutorial movement: khi quest yêu cầu di chuyển nhưng ShortMissionPanel không khả dụng.
         /// Simulate di chuyển bằng cách:
-        /// 1. Tìm Joystick/Pad UI trong game → invoke
-        /// 2. Nếu không có → tạo synthetic PointerEvent click vào game world ở vị trí hướng đi
-        /// 3. Xoay vòng hướng (right→up→left→down) để tìm đường tự động
+        /// 1. Gửi phím cứng OS (W, A, S, D / Arrows) - VÌ GAME YÊU CẦU NÚT THẬT
+        /// 2. (Fallback) Tìm Joystick/Pad UI
         /// </summary>
         private void TryTutorialMovement()
         {
             try
             {
-                // === 1. Thử tìm Joystick/MovePad trong UI (game mobile thường có) ===
+                // === 1. Simulate Physical Key Press (OS Level) ===
+                // Xoay vòng: Right (D) -> Up (W) -> Left (A) -> Down (S)
+                // Mỗi lần gọi giữ phím 0.5s rồi nhả (logic giữ cần coroutine hoặc invoke, ở đây ta nhấn giữ 1 frame dài)
+                
+                byte[] keys = { VK_D, VK_W, VK_A, VK_S };
+                byte key = keys[_tutorialMoveDir % 4];
+                
+                // Press down
+                keybd_event(key, 0, KEYEVENTF_EXTENDEDKEY, 0);
+                
+                // Log
+                string kName = key == VK_D ? "D/Right" : key == VK_W ? "W/Up" : key == VK_A ? "A/Left" : "S/Down";
+                Plugin.Log.LogInfo($"[Bot] 🎹 Tutorial Move: Pressing Key {kName} (Physical)");
+                LogStateAction($"TUTORIAL_MOVE: PressKey {kName}");
+
+                // Release after brief delay (handled by next Update or immediate? 
+                // Better to hold it. But Update calls this every 1.5s. 
+                // We should release previous key first?)
+                
+                // Simple approach: Press and Release immediately implies "tap". 
+                // Movement usually needs "hold".
+                // Let's release 100ms later using a Thread or just hope tap works?
+                // User said "ấn nút", maybe multiple taps works. 
+                // Let's try Press -> Sleep 200ms -> Release
+                
+                // Note: Block main thread 200ms is bad but expected for tutorial step
+                System.Threading.Thread.Sleep(200);
+                keybd_event(key, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);
+
+                _tutorialMoveDir++;
+
+                // === 2. Fallback: Joystick UI (như cũ) ===
+                // (Giữ lại code cũ phòng khi key không ăn nếu window mất focus)
                 string[] joystickNames = { "Joystick", "JoystickPad", "MoveJoystick", "MovePad", "VirtualJoystick", "TouchPad" };
                 foreach (var jName in joystickNames)
                 {
-                    try
+                    var joyObj = GameObject.Find(jName);
+                    if (joyObj != null && joyObj.activeSelf)
                     {
-                        var joyObj = GameObject.Find(jName);
-                        if (joyObj != null && joyObj.activeSelf)
+                        var eventSystem = EventSystem.current;
+                        if (eventSystem != null)
                         {
-                            // Tìm thấy joystick → thử invoke drag event
-                            Plugin.Log.LogInfo($"[Bot] 🕹️ Found joystick UI: {jName}");
-                            LogStateAction($"TUTORIAL_MOVE: Found joystick {jName}");
-                            
-                            // Simulate drag trên joystick bằng PointerEventData
-                            var eventSystem = EventSystem.current;
-                            if (eventSystem != null)
-                            {
-                                var pointerData = new PointerEventData(eventSystem);
-                                
-                                // Drag sang phải (hướng mặc định)
-                                Vector2 joyCenter = joyObj.transform.position;
-                                float dragDist = 50f;
-                                Vector2[] dirs = {
-                                    new Vector2(dragDist, 0),    // right
-                                    new Vector2(0, dragDist),    // up
-                                    new Vector2(-dragDist, 0),   // left
-                                    new Vector2(0, -dragDist)    // down
-                                };
-                                
-                                Vector2 dragDir = dirs[_tutorialMoveDir % 4];
-                                pointerData.position = joyCenter + dragDir;
-                                pointerData.delta = dragDir;
-                                
-                                ExecuteEvents.Execute(joyObj, pointerData, ExecuteEvents.dragHandler);
-                                
-                                LogStateAction($"TUTORIAL_MOVE: Joystick drag dir={_tutorialMoveDir % 4}");
-                                _tutorialMoveDir++;
-                                return;
-                            }
+                            var pointerData = new PointerEventData(eventSystem);
+                            Vector2 joyCenter = joyObj.transform.position;
+                            float dragDist = 50f;
+                            Vector2[] dirs = { new Vector2(dragDist, 0), new Vector2(0, dragDist), new Vector2(-dragDist, 0), new Vector2(0, -dragDist) };
+                            Vector2 dragDir = dirs[_tutorialMoveDir % 4];
+                            pointerData.position = joyCenter + dragDir;
+                            pointerData.delta = dragDir;
+                            ExecuteEvents.Execute(joyObj, pointerData, ExecuteEvents.dragHandler);
                         }
                     }
-                    catch { }
                 }
-
-                // === 2. Fallback: Click vào game world ở vị trí hướng di chuyển ===
-                // Xoay vòng 4 hướng: right → up-right → up → left (quét thử)
-                float screenW = Screen.width;
-                float screenH = Screen.height;
-                
-                // Positions: click gần rìa màn hình theo 4 hướng
-                Vector2[] clickPositions = {
-                    new Vector2(screenW * 0.85f, screenH * 0.5f),   // right
-                    new Vector2(screenW * 0.7f, screenH * 0.75f),   // up-right  
-                    new Vector2(screenW * 0.15f, screenH * 0.5f),   // left
-                    new Vector2(screenW * 0.3f, screenH * 0.25f),   // down-left
-                };
-
-                int dirIdx = _tutorialMoveDir % clickPositions.Length;
-                Vector2 clickPos = clickPositions[dirIdx];
-
-                // Tạo synthetic pointer click event
-                var es = EventSystem.current;
-                if (es != null)
-                {
-                    var pData = new PointerEventData(es);
-                    pData.position = clickPos;
-                    
-                    // Raycast để tìm UI element tại vị trí click
-                    var results = new Il2CppSystem.Collections.Generic.List<RaycastResult>();
-                    es.RaycastAll(pData, results);
-                    
-                    if (results.Count > 0)
-                    {
-                        // Click vào object đầu tiên tìm được
-                        var target = results[0].gameObject;
-                        ExecuteEvents.Execute(target, pData, ExecuteEvents.pointerClickHandler);
-                        Plugin.Log.LogInfo($"[Bot] 🏃 Tutorial move: clicked {target.name} at ({clickPos.x:F0},{clickPos.y:F0}) dir={dirIdx}");
-                    }
-                    else
-                    {
-                        Plugin.Log.LogInfo($"[Bot] 🏃 Tutorial move: world click at ({clickPos.x:F0},{clickPos.y:F0}) dir={dirIdx}");
-                    }
-                }
-
-                LogStateAction($"TUTORIAL_MOVE: WorldClick pos=({clickPos.x:F0},{clickPos.y:F0}) dir={dirIdx}");
-                _tutorialMoveDir++;
             }
             catch (Exception ex)
             {
