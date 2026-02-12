@@ -1235,6 +1235,10 @@ namespace AutoQuestPlugin
                             _questClassifier.OnQuestChanged(qText, actionsTaken);
                             _currentQuestInfo = _questClassifier.Classify(qText);
                             _prevClassifiedQuest = qText;
+                            
+                            // Reset tutorial direction (Start with D/Right)
+                            _tutorialMoveDir = 0; 
+                            _skillPressTimer = 0f; // Reset skill timer too
 
                             // Log classification result
                             LogStateAction($"QUEST_CLASSIFIED: {_currentQuestInfo}");
@@ -2316,7 +2320,7 @@ namespace AutoQuestPlugin
                 // Let's try Press -> Sleep 200ms -> Release
                 
                 // Note: Block main thread 200ms is bad but expected for tutorial step
-                System.Threading.Thread.Sleep(200);
+                System.Threading.Thread.Sleep(500);
                 keybd_event(key, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0);
 
                 _tutorialMoveDir++;
