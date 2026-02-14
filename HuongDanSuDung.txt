@@ -1,0 +1,69 @@
+[=== HƯỚNG DẪN SỬ DỤNG TOOL AUTO VŨ TRỤ ĐẠI CHIẾN v43 PRO ===]
+
+Đây là công cụ hỗ trợ chơi game tự động (Bot) với các tính năng tối ưu cho việc Farm nhiều tài khoản (Multi-Account) và làm nhiệm vụ tự động.
+
+------ I. ACCOUNT LAUNCHER (QUẢN LÝ TÀI KHOẢN) ------
+
+1. Quản lý Đa Tài Khoản:
+   - Thêm/Sửa/Xóa tài khoản game dễ dàng.
+   - Hiển thị trạng thái: Đang chạy (Running) / Đang dừng (Stopped).
+   - Hiển thị thông tin nhân vật: Cấp độ (Lv), Bản đồ hiện tại (Map) ngay trên danh sách.
+
+2. Cài Đặt (Settings):
+   - Kích thước cửa sổ: Tùy chỉnh độ phân giải (320x240, 800x600, ...).
+   - Đồ họa (Graphics):
+     + [x] Tắt bóng (Shadows): Giúp game nhẹ hơn.
+     + [x] Tắt hiệu ứng (Particles): Giảm lag.
+     + [x] Chất lượng thấp nhất: Tối ưu FPS.
+     + [x] Chế độ treo (Siêu nhẹ - Ẩn model): Ẩn người chơi khác và quái để tiết kiệm tối đa CPU/RAM khi treo máy.
+   - Tối ưu Multi-Account:
+     + Tự dọn RAM định kỳ mỗi 60s.
+     + Giảm resolution tối đa khi chạy chế độ không đầu (Headless).
+
+3. Chức năng Dashboard (Bảng điều khiển):
+   - Xem tổng quan tất cả các Bot đang chạy.
+   - Theo dõi Cấp độ, Map, FPS của từng Bot.
+
+4. Tính năng Teleport (Dịch chuyển):
+   - Chọn Map và Zone trực tiếp trên Launcher.
+   - Ấn "Teleport" để dịch chuyển nhân vật ngay lập tức.
+
+------ II. BOT IN-GAME (TỰ ĐỘNG LÀM NHIỆM VỤ) ------
+
+1. Auto Quest (Phase 2):
+   - Tự động nhận nhiệm vụ, trả nhiệm vụ, đánh quái, thu thập vật phẩm.
+   - Smart Dialog: Tự động chọn hội thoại thông minh, ưu tiên icon nhiệm vụ (!) và (?).
+   - Anti-Loop: Tự động phát hiện khi bị kẹt hội thoại và thoát ra để thử lại.
+
+2. Chế độ Treo (Lite Mode) - F8:
+   - Kích hoạt bằng cách tích vào "Chế độ treo (Siêu nhẹ)" trong Launcher hoặc ấn F8 trong game.
+   - Tác dụng:
+     + Khóa FPS xuống 15 để giảm tải GPU.
+     + Ẩn toàn bộ Model nhân vật khác và quái (chỉ giữ lại nhân vật chính).
+     + Tự động bật Auto Attack (Tự đánh) game.
+     + Giúp treo 10-20 acc mượt mà trên máy cấu hình thấp.
+
+3. Các Tính Năng Khác:
+   - Auto Login: Tự động đăng nhập lại khi bị disconnect.
+   - Auto Reconnect: Tự động kết nối lại khi rớt mạng.
+
+------ III. DANH SÁCH PHÍM TẮT (HOTKEYS) ------
+(Lưu ý: Các phím tắt này hoạt động khi cửa sổ game đang active)
+
+- [F8]  : Bật/Tắt Chế độ Treo (Lite Mode) - Siêu nhẹ, ẩn người, auto đánh.
+- [F2]  : Bật/Tắt Chế độ Headless (Cũ - Tắt màn hình đen thui).
+- [F3]  : Bật/Tắt Auto Attack thủ công.
+- [F4]  : Bật/Tắt Auto Interact (Tương tác NPC/Quái).
+- [F5]  : Bật/Tắt Auto NPC Dialog.
+- [F6]  : Resume Quest (Thử tiếp tục làm nhiệm vụ nếu bị kẹt).
+- [F7]  : Tăng tốc độ game (Speed Hack) - x1, x2, x3.
+- [F11] : Force Auto Login (Đăng nhập lại ngay lập tức).
+- [F12] : Ghi log thông tin nhân vật và nhiệm vụ ra file (để debug).
+
+------ IV. LƯU Ý QUAN TRỌNG ------
+- Để treo máy nhẹ nhất: Hãy bật [x] Chế độ treo (Siêu nhẹ) trong Settings của Launcher trước khi bắt đầu.
+- Khi dính lỗi kẹt hội thoại NPC: Bot sẽ tự động xử lý sau vài lần thử lại.
+- Dịch chuyển Map: Sử dụng chức năng Teleport trên Launcher sẽ nhanh và chính xác hơn chạy bộ.
+
+Chúc bạn có trải nghiệm Auto vui vẻ!
+(Phiên bản: v43 Pro - Build: 2026.02.13)

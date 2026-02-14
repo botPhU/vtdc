@@ -22,6 +22,8 @@ namespace AutoQuestPlugin
     /// </summary>
     public class DeepScanner : MonoBehaviour
     {
+        public DeepScanner(IntPtr ptr) : base(ptr) { }
+
         private string _logDir;
         private int _cycleIndex = 0;
         private string[] _cycleTargets = new string[] 
@@ -33,7 +35,7 @@ namespace AutoQuestPlugin
             "ChatManager", "GuideManager", "MobService"
         };
 
-        void Start()
+        public void Start()
         {
             _logDir = Path.Combine(
                 Path.GetDirectoryName(typeof(Plugin).Assembly.Location),
@@ -50,7 +52,7 @@ namespace AutoQuestPlugin
             Plugin.Log.LogInfo("============================================");
         }
 
-        void Update()
+        public void Update()
         {
             if (Input.GetKeyDown(KeyCode.F9))
             {

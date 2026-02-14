@@ -1,10 +1,12 @@
 ﻿using UnityEngine;
+using UnityEngine.Animations;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using UnityEngine.Events;
 using TMPro;
 using System;
+using System.Linq;
 using System.IO;
 using System.Reflection;
 using System.Collections;
@@ -24,7 +26,8 @@ namespace AutoQuestPlugin
         KILLING,        // Đang đánh quái (kill quest)
         COLLECTING,     // Đang thu thập (collect quest)
         RETURNING,      // Đang quay về NPC trả quest
-        TURNING_IN      // Đang trả quest (dialog)
+        TURNING_IN,     // Đang trả quest (dialog)
+        SEARCH_TARGET   // Đang tìm quái/NPC (Resume Quest)
     }
 
     /// <summary>
@@ -41,12 +44,16 @@ namespace AutoQuestPlugin
     /// </summary>
     public class BotController : MonoBehaviour
     {
+        public BotController(IntPtr ptr) : base(ptr) { }
+
+        private int _consecutivePathfindFailures = 0; // Track pathfind failures
         // State — mỗi module có flag riêng
         private bool _autoQuestEnabled = false;    // F1: Auto Quest + Pathfind
         private bool _autoAttackFlag = false;      // F3: Auto Attack
         private bool _autoInteractFlag = false;    // F4: Auto Interact NPC
         private bool _autoDialogFlag = false;      // F5: Auto NPC Dialog
         private bool _headlessMode = false;
+        private bool _liteMode = false; // Lite mode flag
         private float _statusLogTimer = 0f;
         private float _statusLogInterval = 30f;
         private string _currentScene = "";
@@ -57,7 +64,7 @@ namespace AutoQuestPlugin
 
         // Auto-login
         private float _autoLoginTimer = -1f;
-        private float _autoLoginDelay = 4f; // Chờ 4 giây sau LoginScene load
+        private float _autoLoginDelay = 0.5f; // Chờ 0.5 giây sau LoginScene load (nhanh nhất có thể)
         private bool _autoLoginDone = false;
         private string _loginUsername = "";
         private string _loginPassword = "";
@@ -66,7 +73,7 @@ namespace AutoQuestPlugin
 
         // Auto character select (sau khi login xong, tự chọn nhân vật vào game)
         private float _autoCharSelectTimer = -1f;
-        private float _autoCharSelectDelay = 3f; // Chờ 3s sau login
+        private float _autoCharSelectDelay = 1f; // Chờ 1s sau login
         private bool _charSelectDone = false;
         private int _charSelectRetries = 0;
         private int _charSelectMaxRetries = 5; // Thử tối đa 5 lần
@@ -96,6 +103,13 @@ namespace AutoQuestPlugin
 
         // Cached references — Managers
         private MonoBehaviour _autoMissionManager;
+        
+        // Auto Move Fields
+        private QuestStep _currentQuestActionStep = null;
+        private string _lastAnalyzedQuest = "";
+        private HashSet<byte> _pressedKeys = new HashSet<byte>();
+        private float _autoMoveCheckTimer = 0f;
+
         private MonoBehaviour _gameManager;
         private MonoBehaviour _appManager;
         private MonoBehaviour _playerDataManager;
@@ -123,6 +137,19 @@ namespace AutoQuestPlugin
         private string _prevLocation = "";
         private string _prevActionTarget = "";
 
+        // Enhanced State Tracking (Phase 1 - Manual Play Recording)
+        private string _logPrevQuestText = "";
+        private string _logPrevMapName = "";
+        private bool _logPrevDialogOpen = false;
+        private bool _isPlayerDead = false;
+        private string _startupMap = "";
+        private int _startupZone = -1;
+        private bool _startupTeleportDone = false;
+        private string _logPrevPanelState = "";
+        private float _logEnhancedTimer = 0f;
+        private string _lastStatStatus = ""; // To deduplicate STAT logs
+        private string _lastActionTarget = ""; // Target for ResumeQuest logic
+
         // Auto-interact — smart click (chỉ click khi button MỚI xuất hiện)
         private float _interactCheckTimer = 0f;
         private float _interactCheckInterval = 0.5f; // Check nhanh mỗi 0.5s
@@ -135,18 +162,35 @@ namespace AutoQuestPlugin
         private float _pathfindInterval = 8f;
         private float _pathfindCooldown = 0f;
         private float _pathfindCooldownTime = 15f;
+        private float _idleThreshold = 5f; // Restored field
+        private float _autoEnterGameTimer = -1f; // Restored field
+
+        private bool _isInteracting = false;
+        private bool _isFighting = false;
+        
+        // New Idle Check for Auto Quest
+        private float _idleQuestTimer = 0f;
+        private float _idleQuestThreshold = 3.0f; // 3 seconds idle -> trigger quest
+        private GameObject _cachedLocalPlayer; // Cached player reference 
 
         // Player position tracking (phát hiện nhân vật đứng yên)
         private Vector3 _lastPlayerPos = Vector3.zero;
+        
+        // Anti-loop dialogue tracking
+        private string _lastDialoguePanelName = "";
+        private int _consecutiveDialogueClicks = 0;
         private float _idleTime = 0f;
-        private float _idleThreshold = 3f;
-        private float _moveCheckTimer = 0f;
+        private float _moveCheckTimer = 0f; // Added field
         private float _moveCheckInterval = 0.5f;
 
         // NPC dialog timer
         private float _npcDialogTimer = 0f;
         private float _npcDialogInterval = 0.5f; // Check mỗi 0.5s (nhanh hơn để click hết hội thoại)
         private bool _npcDialogWasOpen = false; // Track dialog state để detect đóng
+        private string _lastNpcDialogText = "";
+        private string _lastClickedNpcButton = "";
+        private int _npcDialogStuckCounter = 0;
+        private const int MAX_NPC_DIALOG_STRICT_REPEATS = 4;
 
         // Quest change detection — dừng khi quest không đổi
         private string _trackedQuestText = "";
@@ -156,6 +200,19 @@ namespace AutoQuestPlugin
 
         // Auto-enable quest timer (sau khi vào game tự động bật auto quest)
         private float _autoEnableQuestTimer = -1f;
+
+        // === USER INTERACTION PAUSE ===
+        private float _lastUserActionTime = 0f;
+        private Vector3 _lastMousePos = Vector3.zero;
+
+        // === ANTI-STUCK LOOP DETECTION ===
+        private string _stuckCheckQuest = "";
+        private int _stuckCounter = 0;
+        private float _stuckCheckTimer = 0f;
+        private const float STUCK_CHECK_INTERVAL = 5f; // Check every 5s
+        private const int STUCK_THRESHOLD = 6; // 6 * 5s = 30s stuck -> Escape
+
+
 
         // Status file timer (ghi trạng thái ra file mỗi 5s để Launcher đọc)
         private float _statusFileTimer = 0f;
@@ -177,13 +234,51 @@ namespace AutoQuestPlugin
         private MonoBehaviour _autoAttackBlackBoard;
         private float _reviveCooldown = 0f; // Tránh spam revive
 
+        // Zone UI References (Cached)
+        private GameObject _zoneObject;
+        private GameObject _mapNameObject;
+
         // Boss notification scanner
         private float _bossCheckTimer = 0f;
         private float _bossCheckInterval = 5f; // Scan mỗi 5s
         private string _lastBossNotification = "";
         private string _lastBossMap = "";
         private float _lastBossTime = 0f;
-        private bool _killQuestDone = false; // Flag: kill quest vừa hoàn thành, cần pathfind
+        private bool _killQuestDone = false; 
+        
+        // Combat Zone Detection
+        private bool _inCombatZone = false;
+        private float _zoneCheckTimer = 0f;
+
+        // === MAP NAME DICTIONARY ===
+        private readonly Dictionary<string, string> _sceneNameDict = new Dictionary<string, string>
+        {
+            { "MainGameScene", "Làng Aru" },
+            { "NgoaiO", "Ngoại Ô" },
+            { "KhuRungAru", "Rừng Aru" },
+            { "ThanhPhoKaio", "Thành Phố Kaio" },
+            // Add more as discovered
+        };
+
+        // === USER PAUSE HELPERS ===
+        private bool GlobalPauseCheck()
+        {
+            // Detect input
+            if (Input.anyKey || (Input.mousePosition - _lastMousePos).sqrMagnitude > 5.0f)
+            {
+                _lastUserActionTime = Time.time;
+                _lastMousePos = Input.mousePosition;
+            }
+
+            // Strict Pause
+            if (Time.time - _lastUserActionTime < 5f)
+            {
+                // NOTE: Removed NavMeshAgent.GetComponent call — it crashes IL2CPP interop
+                // with TypeInitializationException every frame, killing the entire Update loop.
+                return true; // PAUSED
+            }
+            return false; // ACTIVE
+        }
 
         // ======================== FARM STATE MACHINE ========================
         private FarmState _farmState = FarmState.IDLE;
@@ -210,11 +305,15 @@ namespace AutoQuestPlugin
         private HashSet<int> _hookedBtnIds = new HashSet<int>();  // Track button đã hook
         private string _lastNpcName = "";  // Tên NPC đang tương tác
         private bool _botInvoking = false;  // Flag: true khi BOT gọi onClick.Invoke() (không phải user click)
+        private float _lastUserActivityTime = 0f; // Track last manual interaction
 
         // AI Quest Classifier
         private QuestClassifier _questClassifier = null;
         private QuestInfo _currentQuestInfo = null;
         private string _prevClassifiedQuest = "";
+        
+        // Smart Dialog Sequence (from Analyzer DB)
+        private List<string> _currentQuestDialogSequence = new List<string>();
 
         // Tutorial movement (khi ShortMissionPanel không khả dụng)
         private float _tutorialMoveTimer = 0f;
@@ -236,6 +335,7 @@ namespace AutoQuestPlugin
         private const int MAX_LOG_ENTRIES = 50;
         private string _activityLogFilePath = ""; // For live update in Launcher
         private float _gameSpeed = 1f;           // Current game speed (Time.timeScale)
+        private float _periodicLogTimer = 0f;    // Timer for 1s periodic logging
 
         /// <summary>
         /// Log a bot activity to both BepInEx console, in-memory ring buffer, and file (for live dashboard)
@@ -277,31 +377,79 @@ namespace AutoQuestPlugin
         }
 
         /// <summary>
-        /// Log an action to the STATE LOG file (for game state analysis)
+        /// Log an action to the STATE LOG file in a structured format.
+        /// Enhanced format includes ZONE and PANELS for detailed quest flow analysis.
         /// </summary>
         private void LogStateAction(string action)
         {
             if (!_stateLogRunning) return;
             try
             {
-                string ts = DateTime.Now.ToString("HH:mm:ss.fff");
-                string pos = "0,0,0";
-                try { var cam = Camera.main; if (cam != null) pos = $"{cam.transform.position.x:F1},{cam.transform.position.y:F1},{cam.transform.position.z:F1}"; } catch {}
-                string quest = "";
-                try { quest = GetCurrentQuestText(); } catch {}
-                string loc = "";
-                try { loc = GetCurrentMapName() ?? ""; } catch {}
-                string entry = $"[{ts}] | ACTION: {action} | Pos:{pos} | Location:{loc} | Quest:{quest}";
+                string time = DateTime.Now.ToString("HH:mm:ss.fff");
+                string posStr = "0.0,0.0,0.0";
+                try { 
+                    var cam = Camera.main; 
+                    if (cam != null) {
+                        Vector3 p = cam.transform.position;
+                        posStr = $"{p.x:F1},{p.y:F1},{p.z:F1}";
+                    }
+                } catch {}
+
+                string map = "Unknown";
+                try { map = GetCurrentMapName() ?? "Unknown"; } catch {}
+
+                string zone = "Unknown";
+                try { zone = GetCurrentZoneName() ?? "Unknown"; } catch {}
+
+                string quest = "None";
+                try { quest = GetCurrentQuestText() ?? "None"; } catch {}
+
+                string panels = GetVisiblePanels();
+
+                string autoQ = _autoQuestEnabled ? "ON" : "OFF";
+
+                // Enhanced format for high-fidelity manual play recording
+                string entry = $"[TIME:{time}] | [POS:{posStr}] | [LOC:{map}] | [ZONE:{zone}] | [AQ:{autoQ}] | [PANELS:{panels}] | [QUEST:{quest}] | [ACTION:{action}]";
                 _stateLogQueue.Enqueue(entry);
             }
             catch { }
         }
 
-        void Start()
+        /// <summary>
+        /// Detect which UI panels are currently visible — for quest flow analysis.
+        /// </summary>
+        private string GetVisiblePanels()
+        {
+            var visible = new System.Collections.Generic.List<string>();
+            try
+            {
+                string[] panelNames = {
+                    "NpcInteractPanel(Clone)", "NpcInteractPanel", "DialogPanel", "StoryPanel",
+                    "DlgNpc", "ConfirmBox", "ShortMissionPanel", "ReceiveGiftPanel",
+                    "CharacterChoosingPanel", "BossNotifPanel", "PanelMenu",
+                    "SkillInfoPanel", "MapPanel", "InventoryPanel", "QuestPanel"
+                };
+                foreach (var name in panelNames)
+                {
+                    try
+                    {
+                        var obj = GameObject.Find(name);
+                        if (obj != null && obj.activeInHierarchy)
+                            visible.Add(name.Replace("(Clone)", ""));
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return visible.Count > 0 ? string.Join(",", visible) : "None";
+        }
+
+
+
+        public void Start()
         {
             Plugin.Log.LogInfo("[BotController] Đang khởi tạo...");
-            
-            // Init State Logger (inline, no AddComponent needed)
+            if (File.Exists(_stateLogPath)) File.Delete(_stateLogPath); // Init State Logger (inline, no AddComponent needed)
             try
             {
                 string pluginDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
@@ -329,6 +477,17 @@ namespace AutoQuestPlugin
                     }
                     Plugin.Log.LogInfo($"[QuestAI] ✅ Learned {totalLearned} patterns from {logFiles.Length} log files");
                     Plugin.Log.LogInfo($"[QuestAI] Stats: {_questClassifier.GetStats()}");
+
+                    // Load Quest Database from Analyzer Output (NEW)
+                    string dbPath = Path.Combine(pluginDir, "quest_db.txt");
+                    if (File.Exists(dbPath))
+                    {
+                        QuestDatabase.LoadDatabase(dbPath);
+                    }
+                    else
+                    {
+                        Plugin.Log.LogWarning($"[AutoQuest] Database not found at: {dbPath}. Run analyzer first!");
+                    }
                 }
                 catch (Exception lex)
                 {
@@ -420,26 +579,91 @@ namespace AutoQuestPlugin
                 // === 6. FPS lock ===
                 if (_targetFps > 0)
                 {
-                    Application.targetFrameRate = _targetFps;
+                    Application.targetFrameRate = _liteMode ? Math.Min(15, _targetFps) : _targetFps;
                     QualitySettings.vSyncCount = 0;
-                    Plugin.Log.LogInfo($"[Gfx] ✅ FPS: {_targetFps}, VSync: OFF");
+                    Plugin.Log.LogInfo($"[Gfx] ✅ FPS: {Application.targetFrameRate} (Lite:{_liteMode}), VSync: OFF");
                 }
 
                 // === 7. Tắt ParticleSystems nếu cần ===
-                if (_disableParticles)
+                if (_disableParticles || _liteMode)
                 {
                     DisableAllParticles();
                 }
 
                 // === 8. Tắt đèn phụ (giữ lại main directional light) ===
-                DisableExtraLights();
+                if (_liteMode) DisableExtraLights();
 
-                Plugin.Log.LogInfo("[Gfx] ✅ GraphicsSettings applied: LOW QUALITY");
+                // === 9. Lite Mode: Model Hiding & Extra CPU Savings ===
+                if (_liteMode)
+                {
+                    ApplyLiteModeOptimizations();
+                }
+
+                Plugin.Log.LogInfo($"[Gfx] ✅ GraphicsSettings applied: {(_liteMode ? "LITE MODE" : "LOW QUALITY")}");
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogError($"[Gfx] Error: {ex.Message}");
+                Plugin.Log.LogWarning($"[Gfx] Apply error: {ex.Message}");
             }
+        }
+
+        private void ApplyLiteModeOptimizations()
+        {
+            try
+            {
+                Plugin.Log.LogInfo("[LiteMode] 🛠️ Applying aggressive optimizations...");
+                
+                // Hide other entities (Models)
+                var renderers = GameObject.FindObjectsOfType<SkinnedMeshRenderer>();
+                int meshCount = 0;
+                foreach (var r in renderers)
+                {
+                    if (r == null || r.gameObject == null) continue;
+                    
+                    // Don't hide local player if we can identify it
+                    string goName = r.gameObject.name;
+                    if (goName.Contains("MainPlayer") || goName.Contains("Local") || (r.transform.root != null && r.transform.root.gameObject.name.Contains("Player")))
+                        continue;
+
+                    r.enabled = false;
+                    meshCount++;
+                }
+
+                // Disable Animators (CPU heavy)
+                var animators = GameObject.FindObjectsOfType<Animator>();
+                int animCount = 0;
+                foreach (var a in animators)
+                {
+                    if (a == null) continue;
+                    
+                    string goName = a.gameObject.name;
+                    if (goName.Contains("MainPlayer") || goName.Contains("Local") || (a.transform.root != null && a.transform.root.gameObject.name.Contains("Player")))
+                        continue;
+
+                    a.enabled = false;
+                    animCount++;
+                }
+
+                Plugin.Log.LogInfo($"[LiteMode] ✅ Hidden: {meshCount} meshes, {animCount} anims");
+
+                // Auto-enable Auto Attack when entering Lite mode
+                ToggleAutoAttack(true);
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[LiteMode] Opt error: {ex.Message}"); }
+        }
+
+        private void ToggleLiteMode()
+        {
+            _liteMode = !_liteMode;
+            Plugin.Log.LogInfo($"[LiteMode] 🔄 Toggled: {(_liteMode ? "✅ ON" : "❌ OFF")}");
+            
+            if (_liteMode)
+            {
+                _autoAttackFlag = true; // Auto-enable the logic flag
+                ToggleAutoAttack(true); // Force the click
+            }
+            
+            ApplyGraphicsSettings();
         }
 
         /// <summary>
@@ -528,7 +752,7 @@ namespace AutoQuestPlugin
                 }
                 else
                 {
-                    accIdx = ParseJsonInt(json, "currentAccountIndex");
+                    accIdx = BotHelper.ParseJsonInt(json, "currentAccountIndex");
                     Plugin.Log.LogInfo($"[Bot] Account index from config: {accIdx}");
                 }
 
@@ -550,12 +774,18 @@ namespace AutoQuestPlugin
                     if (currentIdx == accIdx)
                     {
                         string obj = json.Substring(objStart, objEnd - objStart + 1);
-                        _loginUsername = ParseJsonString(obj, "username");
-                        _loginPassword = ParseJsonString(obj, "password");
-                        _loginServer = ParseJsonInt(obj, "server");
-                        _loginCharacter = ParseJsonInt(obj, "character");
-                        _configHeadless = ParseJsonBool(obj, "headless");
-                        Plugin.Log.LogInfo($"[Bot] ✅ Config loaded: user={_loginUsername}, server={_loginServer}, char={_loginCharacter}, headless={_configHeadless}");
+                        _loginUsername = BotHelper.ParseJsonString(obj, "username");
+                        _loginPassword = BotHelper.ParseJsonString(obj, "password");
+                        _loginServer = BotHelper.ParseJsonInt(obj, "server");
+                        _loginCharacter = BotHelper.ParseJsonInt(obj, "character");
+                        _configHeadless = BotHelper.ParseJsonBool(obj, "headless");
+                        // Parse per-account autoQuest (overrides global settings)
+                        if (obj.Contains("autoQuest"))
+                        {
+                            _configAutoQuest = obj.Contains("\"autoQuest\": true") || obj.Contains("\"autoQuest\":true");
+                            Plugin.Log.LogInfo($"[Bot] ⚙️ Per-account autoQuest={_configAutoQuest}");
+                        }
+                        Plugin.Log.LogInfo($"[Bot] ✅ Config loaded: user={_loginUsername}, server={_loginServer}, char={_loginCharacter}, headless={_configHeadless}, autoQuest={_configAutoQuest}");
 
                         // Parse settings section (at root level)
                         int settingsStart = json.IndexOf("\"settings\"");
@@ -566,24 +796,29 @@ namespace AutoQuestPlugin
                             if (sObjStart >= 0 && sObjEnd >= 0)
                             {
                                 string sObj = json.Substring(sObjStart, sObjEnd - sObjStart + 1);
-                                _disableShadows = ParseJsonBool(sObj, "disableShadows");
-                        _disableParticles = ParseJsonBool(sObj, "disableParticles");
-                        _lowQuality = ParseJsonBool(sObj, "lowQuality");
-                        _targetFps = ParseJsonInt(sObj, "targetFps");
+                                _disableShadows = BotHelper.ParseJsonBool(sObj, "disableShadows");
+                        _disableParticles = BotHelper.ParseJsonBool(sObj, "disableParticles");
+                        _lowQuality = BotHelper.ParseJsonBool(sObj, "lowQuality");
+                        _targetFps = BotHelper.ParseJsonInt(sObj, "targetFps");
                         if (_targetFps <= 0) _targetFps = 10;
-                        _windowWidth = ParseJsonInt(sObj, "windowWidth");
-                        _windowHeight = ParseJsonInt(sObj, "windowHeight");
-                        _autoCleanRAM = ParseJsonBool(sObj, "autoCleanRAM");
-                        _ultraLowRes = ParseJsonBool(sObj, "ultraLowRes");
-                        _configAutoQuest = ParseJsonBool(sObj, "autoQuest");
-                        _configSmartDialog = ParseJsonBool(sObj, "smartDialog");
-                        _configCollectQuest = ParseJsonBool(sObj, "collectQuest");
-                        _configAutoPathfind = ParseJsonBool(sObj, "autoPathfind");
-                        // Default to true if key not found (ParseJsonBool returns false for missing)
-                        if (!sObj.Contains("autoQuest")) _configAutoQuest = true;
+                        _windowWidth = BotHelper.ParseJsonInt(sObj, "windowWidth");
+                        _windowHeight = BotHelper.ParseJsonInt(sObj, "windowHeight");
+                        _autoCleanRAM = BotHelper.ParseJsonBool(sObj, "autoCleanRAM");
+                        _ultraLowRes = BotHelper.ParseJsonBool(sObj, "ultraLowRes");
+                        _liteMode = BotHelper.ParseJsonBool(sObj, "liteMode");
+                        // Global settings autoQuest is a FALLBACK — per-account value takes priority
+                        if (!obj.Contains("autoQuest"))
+                        {
+                            _configAutoQuest = sObj.Contains("\"autoQuest\": true") || sObj.Contains("\"autoQuest\":true");
+                            if (!sObj.Contains("autoQuest")) _configAutoQuest = true;
+                        }
                         if (!sObj.Contains("smartDialog")) _configSmartDialog = true;
                         if (!sObj.Contains("collectQuest")) _configCollectQuest = true;
                         if (!sObj.Contains("autoPathfind")) _configAutoPathfind = true;
+                        
+                        _startupMap = BotHelper.ParseJsonString(sObj, "startupMap");
+                        _startupZone = BotHelper.ParseJsonInt(sObj, "startupZone");
+                        if (!sObj.Contains("startupZone")) _startupZone = -1;
                         Plugin.Log.LogInfo($"[Bot] ⚙️ Settings: shadows={!_disableShadows}, particles={!_disableParticles}, quality={(_lowQuality?"low":"default")}, fps={_targetFps}, window={_windowWidth}x{_windowHeight}");
                         Plugin.Log.LogInfo($"[Bot] ⚙️ Multi-acc: autoCleanRAM={_autoCleanRAM}, ultraLowRes={_ultraLowRes}");
                         Plugin.Log.LogInfo($"[Bot] ⚙️ Phase2: autoQuest={_configAutoQuest}, smartDialog={_configSmartDialog}, collectQuest={_configCollectQuest}, autoPathfind={_configAutoPathfind}");
@@ -610,9 +845,51 @@ namespace AutoQuestPlugin
 
         // ======================== UPDATE ========================
 
-        void Update()
+        public void Update()
         {
-            // Resize check (Added)
+            // === AUTO LOGIN LOGIC (BEFORE GlobalPause — login must always run!) ===
+            if (_currentScene == "LoginScene")
+            {
+                if (_autoLoginTimer == -1f) _autoLoginTimer = Time.time;
+                
+                if (!_autoLoginDone && Time.time - _autoLoginTimer > _autoLoginDelay)
+                {
+                    HandleAutoLogin();
+                    _autoLoginDone = true; 
+                    _autoCharSelectTimer = Time.time;
+                }
+                
+                if (_autoLoginDone && !_charSelectDone && Time.time - _autoCharSelectTimer > _autoCharSelectDelay)
+                {
+                     HandleCharacterSelect();
+                }
+
+                if (_charSelectDone)
+                {
+                    if (_autoEnterGameTimer == -1f) _autoEnterGameTimer = Time.time;
+                    if (Time.time - _autoEnterGameTimer > 1f)
+                    {
+                        HandleEnterGame();
+                        _autoEnterGameTimer = Time.time;
+                    }
+                }
+            }
+
+            // === 0. GLOBAL PAUSE CHECK (after login logic, so login always works) ===
+            if (GlobalPauseCheck()) return;
+
+            // === USER ACTIVITY CHECK ===
+            try
+            {
+                if (Input.anyKey || (Input.mousePosition - _lastMousePos).sqrMagnitude > 1.0f)
+                {
+                    _lastUserActionTime = Time.time;
+                    _lastMousePos = Input.mousePosition;
+                }
+            }
+            catch {}
+
+            // Resize check
             if (_windowWidth > 0 && _windowHeight > 0 && _resizeTimer < 10f)
             {
                 _resizeTimer += Time.deltaTime;
@@ -628,14 +905,14 @@ namespace AutoQuestPlugin
                 }
             }
 
-            var currentScene = SceneManager.GetActiveScene().name;
+            // === SCENE CHANGE DETECTION ===
+            string currentScene = SceneManager.GetActiveScene().name;
             if (currentScene != _currentScene)
             {
                 _currentScene = currentScene;
                 Plugin.Log.LogInfo($"[Bot] Scene changed: {_currentScene}");
                 _managersFound = false;
 
-                // Dọn RAM khi đổi scene (nếu headless)
                 if (_headlessMode && _autoCleanRAM && _lastCleanScene != _currentScene)
                 {
                     _lastCleanScene = _currentScene;
@@ -644,78 +921,87 @@ namespace AutoQuestPlugin
                 
                 if (_currentScene == "LoginScene")
                 {
-                    // Nếu đã login trước đó → bị disconnect → auto reconnect
                     if (_autoLoginDone && !string.IsNullOrEmpty(_loginUsername))
                     {
                         Plugin.Log.LogWarning("[Bot] ⚡ Phát hiện DISCONNECT → tự động đăng nhập lại!");
                         _autoLoginDone = false;
                         _charSelectDone = false;
-                        _charSelectRetries = 0;
-                        _autoLoginTimer = _autoLoginDelay + 2f; // Chờ thêm 2s
-                    }
-                    else if (!_autoLoginDone && !string.IsNullOrEmpty(_loginUsername))
-                    {
-                        _autoLoginTimer = _autoLoginDelay;
-                        Plugin.Log.LogInfo($"[Bot] 🔑 Sẽ auto-login sau {_autoLoginDelay}s...");
+                        _autoLoginTimer = -1f;
+                        _autoEnterGameTimer = -1f;
                     }
                 }
-                else if (_currentScene != "InitScene")
+                else if (_currentScene == "MainGameScene")
                 {
-                    // Nếu đang auto quest → tìm managers nhanh hơn + reset cached refs
-                    if (_autoQuestEnabled)
+                    if (!_managersFound)
                     {
-                        _findManagersTimer = 3f; // Nhanh hơn default
-                        _autoAttackBtn = null;
-                        _interactBtn = null;
-                        _shortMissionBtn = null;
-                        _shortMissionPanel = null;
-                        _interactBtnWasVisible = false;
-                        _autoAttackEnabled = false; // Cần re-enable
-                        Plugin.Log.LogInfo("[Bot] 🗺️ Map transition detected → reset cached refs, re-finding managers...");
+                        _findManagersTimer = 5f;
+                        Plugin.Log.LogInfo("[Bot] 🔍 Scheduling FindManagers() in 5s...");
                     }
-                    else
+                    if (_autoEnableQuestTimer < 0 && _configAutoQuest)
                     {
-                        _findManagersTimer = _findManagersDelay;
+                        _autoEnableQuestTimer = 8f;
+                        Plugin.Log.LogInfo("[Bot] ⏰ Scheduling Auto Quest enable in 8s...");
                     }
-                    Plugin.Log.LogInfo($"[Bot] Sẽ tìm managers sau {_findManagersTimer}s...");
                 }
-
-                // Re-apply graphics settings khi đổi scene (game hay reset lại)
                 ApplyGraphicsSettings();
             }
 
-            // Timer auto-login
-            if (_autoLoginTimer > 0)
+            // --- 1. Startup Teleport Logic ---
+            CheckStartupTeleport();
+            
+            // --- IDLE CHECK FOR AUTO QUEST ---
+            // Fix: If Auto Quest is active but player stands still for 3s -> Force click Quest Panel
+            // --- IDLE CHECK FOR AUTO QUEST ---
+            // Fix: If Auto Quest is active but player stands still for 3s -> Force click Quest Panel
+            if (_autoQuestEnabled)
             {
-                _autoLoginTimer -= Time.deltaTime;
-                if (_autoLoginTimer <= 0)
-                {
-                    _autoLoginTimer = -1f;
-                    DoAutoLogin();
-                }
-            }
+                 // Try to find player if not cached
+                 if (_cachedLocalPlayer == null) 
+                 {
+                     _cachedLocalPlayer = GameObject.Find("MainPlayer");
+                     if (_cachedLocalPlayer == null) _cachedLocalPlayer = GameObject.Find("LocalPlayer");
+                 }
 
-            // Timer auto character select (sau khi login xong)
-            if (_autoCharSelectTimer > 0)
-            {
-                _autoCharSelectTimer -= Time.deltaTime;
-                if (_autoCharSelectTimer <= 0)
-                {
-                    _autoCharSelectTimer = -1f;
-                    DoAutoSelectCharacter();
-                }
-            }
+                 if (_cachedLocalPlayer != null)
+                 {
+                     // Check if player moved (Interval Check for robustness)
+                     _moveCheckTimer += Time.deltaTime;
+                     if (_moveCheckTimer > 0.5f)
+                     {
+                         float movedDist = Vector3.Distance(_cachedLocalPlayer.transform.position, _lastPlayerPos);
+                         _lastPlayerPos = _cachedLocalPlayer.transform.position; // Update for next interval
+                         _moveCheckTimer = 0f;
 
-            // Timer enter game (clíck nút vào game sau khi chọn nhân vật)
-            if (_enterGameTimer > 0)
-            {
-                _enterGameTimer -= Time.deltaTime;
-                if (_enterGameTimer <= 0)
-                {
-                    _enterGameTimer = -1f;
-                    DoAutoEnterGame();
-                }
+                         // If moved > 0.1 in 0.5s -> active
+                         bool isMoving = movedDist > 0.1f;
+                         bool isActing = isMoving || _botInvoking || _isFighting || _isInteracting;
+
+                         if (isActing)
+                         {
+                             _idleQuestTimer = 0f;
+                         }
+                         else
+                         {
+                             // Only increment timer if we are truly idle in this interval
+                             // We add 0.5s to the timer since we checked over 0.5s
+                             _idleQuestTimer += 0.5f; 
+                         }
+                     }
+
+                     if (_idleQuestTimer > 5.0f) // Increased threshold to 5s
+                     {
+                         Plugin.Log.LogWarning($"[Bot] ⚠️ Detected IDLE for 5s while Auto Quest is ON. Triggering Quest Panel Update...");
+                         TriggerAutoPathfind(true); // FORCE click to bypass kill quest check
+                         _idleQuestTimer = 0f; // Reset to avoid spamming
+                     }
+                 }
             }
+            else
+            {
+                _idleQuestTimer = 0f; // Reset if auto quest is off
+            }
+            
+            // _enterGameTimer handled by AUTO LOGIN LOGIC block above
 
             // Timer auto-enable quest (sau khi vào game)
             if (_autoEnableQuestTimer > 0)
@@ -724,31 +1010,48 @@ namespace AutoQuestPlugin
                 if (_autoEnableQuestTimer <= 0)
                 {
                     _autoEnableQuestTimer = -1f;
-                    if (!_autoQuestEnabled)
+                    if (_configAutoQuest)
                     {
-                        Plugin.Log.LogInfo("[Bot] 🎮 Auto-enable quest system sau khi vào game!");
-                        ToggleAutoAll();
+                        Plugin.Log.LogInfo("[Bot] ⏰ Auto-Enable Quest (Start)");
+                        if (!_autoQuestEnabled) ToggleAutoAll();
                     }
                 }
             }
 
-            // Timer tìm managers
-            if (_findManagersTimer > 0)
+            bool inGame = _currentScene != null && _currentScene != "LoginScene" && _currentScene != "InitScene";
+
+            // Helper timers
+            if (Time.time - _zoneCheckTimer > 2.0f)
             {
-                _findManagersTimer -= Time.deltaTime;
-                if (_findManagersTimer <= 0)
-                {
-                    _findManagersTimer = -1f;
-                    FindManagers();
+                UpdateZoneStatus();
+                _zoneCheckTimer = Time.time;
+            }
 
-                    // Re-enable auto attack nếu đang auto quest (sau map transition)
-                    if (_autoQuestEnabled && !_autoAttackEnabled)
+            // === ZONE AUTO ATTACK TRIGGER ===
+            // Bật auto attack nếu đang auto quest (ở combat zone) HOẶC đang bật LiteMode
+            // Guard: only try if _mainGame has been found (via FindManagers)
+            if (inGame && _mainGame != null && ((_autoQuestEnabled && _inCombatZone) || _liteMode))
+            {
+                EnsureAutoAttack();
+            }
+
+            // === PERIODIC FINDMANAGERS RETRY ===
+            // If managers not found yet and we've been in-game for a while, retry
+            if (inGame && !_managersFound && _findManagersTimer < 0 && Time.time > 15f)
+            {
+                _findManagersTimer = 3f;
+                Plugin.Log.LogInfo("[Bot] 🔄 Retrying FindManagers() (not found yet)...");
+            }
+
+                if (_findManagersTimer > 0)
+                {
+                    _findManagersTimer -= Time.deltaTime;
+                    if (_findManagersTimer <= 0)
                     {
-                        ToggleAutoAttack(true);
-                        Plugin.Log.LogInfo("[Bot] 🗺️ Re-enabled auto attack sau map transition");
+                        _findManagersTimer = -1f;
+                        FindManagers();
                     }
                 }
-            }
 
             // ======================== HOTKEYS ========================
             // F1 disabled — dùng Phase 2 config thay vì hotkey
@@ -764,6 +1067,10 @@ namespace AutoQuestPlugin
                 ToggleAutoDialogKey();   // NPC Dialog riêng
             if (Input.GetKeyDown(KeyCode.F6))
             {
+                ResumeQuest(); // Auto-Resume based on Quest Text
+            }
+            if (Input.GetKeyDown(KeyCode.F7))
+            {
                 _gameSpeed = (_gameSpeed >= 3f) ? 1f : _gameSpeed + 1f;
                 Time.timeScale = _gameSpeed;
                 LogActivity($"⚡ Game Speed: x{_gameSpeed}");
@@ -771,15 +1078,17 @@ namespace AutoQuestPlugin
             if (Input.GetKeyDown(KeyCode.F11))
             {
                 _autoLoginDone = false;
-                DoAutoLogin();
+                HandleAutoLogin();
             }
             if (Input.GetKeyDown(KeyCode.F12))
             {
                 LogPlayerInfo();
                 LogQuestStatus();
             }
-
-            bool inGame = _currentScene != "LoginScene" && _currentScene != "InitScene";
+            if (Input.GetKeyDown(KeyCode.F8))
+            {
+                ToggleLiteMode();
+            }
 
             // ======================== PERIODIC STATUS ========================
             _statusLogTimer += Time.deltaTime;
@@ -807,6 +1116,8 @@ namespace AutoQuestPlugin
                     catch { }
 
                     float dist = Vector3.Distance(currentPos, _lastPlayerPos);
+                    if (dist > 0.1f) _consecutivePathfindFailures = 0; // Reset fail count when moving
+
                     if (dist < 0.1f)
                     {
                         _idleTime += _moveCheckInterval;
@@ -820,6 +1131,198 @@ namespace AutoQuestPlugin
                         _idleTime = 0f;
                     }
                     _lastPlayerPos = currentPos;
+                }
+            }
+
+            // ======================== PERIODIC STATE LOGGING (Reduced Spam) ========================
+            if (inGame && _stateLogRunning)
+            {
+                _periodicLogTimer += Time.deltaTime;
+                string currentStatus = (_idleTime >= _idleThreshold) ? "IDLE" : "RUNNING";
+                
+                // Log if status changed OR every 5 seconds (heartbeat)
+                if (currentStatus != _lastStatStatus || _periodicLogTimer >= 5.0f)
+                {
+                    _periodicLogTimer = 0f;
+                    _lastStatStatus = currentStatus;
+                    LogStateAction($"STAT: {currentStatus}"); 
+                }
+            }
+
+            // ======================== ENHANCED TRANSITION DETECTION (Always-on Recording) ========================
+            if (inGame && _stateLogRunning)
+            {
+                // --- PER-FRAME: Keyboard Input Logging ---
+                try
+                {
+                    foreach (var key in _trackedKeys)
+                    {
+                        if (Input.GetKeyDown(key))
+                        {
+                            LogStateAction($"KEY_PRESS: {key}");
+                        }
+                    }
+                    // Mouse click logging (left click) — UI + 3D World
+                    if (Input.GetMouseButtonDown(0))
+                    {
+                        string clickTarget = "Screen";
+                        bool hitUI = false;
+                        try
+                        {
+                            var eventSys = EventSystem.current;
+                            if (eventSys != null && eventSys.currentSelectedGameObject != null)
+                            {
+                                hitUI = true;
+                                var selObj = eventSys.currentSelectedGameObject;
+                                string btnText = "";
+                                try
+                                {
+                                    var tmp = selObj.GetComponentInChildren<TextMeshProUGUI>();
+                                    if (tmp != null) btnText = tmp.text ?? "";
+                                }
+                                catch { }
+                                clickTarget = $"{selObj.name}" + (string.IsNullOrEmpty(btnText) ? "" : $" [{btnText}]");
+                            }
+                        }
+                        catch { }
+                        
+                        // 3D World raycast — detect boss/NPC/entity clicks
+                        if (!hitUI)
+                        {
+                            try
+                            {
+                                var cam = Camera.main;
+                                if (cam != null)
+                                {
+                                    Ray ray = cam.ScreenPointToRay(Input.mousePosition);
+                                    RaycastHit hit;
+                                    if (Physics.Raycast(ray, out hit, 100f))
+                                    {
+                                        var hitObj = hit.collider.gameObject;
+                                        string objName = hitObj.name ?? "?";
+                                        string tag = "";
+                                        try { tag = hitObj.tag ?? ""; } catch { }
+                                        Vector3 hitPos = hit.point;
+                                        clickTarget = $"3D:{objName} [tag:{tag}] at ({hitPos.x:F1},{hitPos.y:F1},{hitPos.z:F1})";
+                                        
+                                        // Boss/NPC detection keywords
+                                        string nameLower = objName.ToLower();
+                                        if (nameLower.Contains("boss") || nameLower.Contains("npc") ||
+                                            nameLower.Contains("monster") || nameLower.Contains("enemy") ||
+                                            nameLower.Contains("mob") || tag == "Enemy" || tag == "NPC")
+                                        {
+                                            LogStateAction($"TARGET_CLICK: {objName} | Tag: {tag} | Pos: ({hitPos.x:F1},{hitPos.y:F1},{hitPos.z:F1})");
+                                        }
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                        LogStateAction($"MOUSE_CLICK: {clickTarget}");
+                    }
+                }
+                catch { }
+
+                // --- EVERY 0.5s: State Transition Checks ---
+                _logEnhancedTimer += Time.deltaTime;
+                if (_logEnhancedTimer >= 0.5f) // Check mỗi 0.5s
+                {
+                    _logEnhancedTimer = 0f;
+                    try
+                    {
+                        // --- QUEST TRANSITION (with end_pos tracking) ---
+                        string curQuest = "";
+                        try { curQuest = GetCurrentQuestText() ?? ""; } catch { }
+                        if (!string.IsNullOrEmpty(curQuest) && curQuest != _logPrevQuestText)
+                        {
+                            // Log END position of previous quest
+                            if (!string.IsNullOrEmpty(_logPrevQuestText))
+                            {
+                                string endPos = "0,0,0";
+                                string endMap = "?";
+                                try {
+                                    var cam = Camera.main;
+                                    if (cam != null) {
+                                        Vector3 p = cam.transform.position;
+                                        endPos = $"{p.x:F1},{p.y:F1},{p.z:F1}";
+                                    }
+                                } catch {}
+                                try { endMap = GetCurrentMapName() ?? "?"; } catch {}
+                                LogStateAction($"QUEST_END_POS: {endPos} | Map: {endMap} | Quest: {_logPrevQuestText}");
+                            }
+
+                            if (string.IsNullOrEmpty(_logPrevQuestText))
+                                LogStateAction($"QUEST_START: {curQuest}");
+                            else
+                                LogStateAction($"QUEST_CHANGED: [{_logPrevQuestText}] → [{curQuest}]");
+                            _logPrevQuestText = curQuest;
+                        }
+
+                        // --- MAP TRANSITION ---
+                        string curMap = "";
+                        try { curMap = GetCurrentMapName() ?? ""; } catch { }
+                        if (!string.IsNullOrEmpty(curMap) && curMap != _logPrevMapName)
+                        {
+                            if (!string.IsNullOrEmpty(_logPrevMapName))
+                                LogStateAction($"MAP_CHANGED: [{_logPrevMapName}] → [{curMap}]");
+                            _logPrevMapName = curMap;
+                        }
+
+                        // --- DIALOG/PANEL OPEN/CLOSE + AUTO-HOOK BUTTONS ---
+                        bool dialogOpen = false;
+                        try { dialogOpen = IsDialogueOpen(); } catch { }
+                        if (dialogOpen != _logPrevDialogOpen)
+                        {
+                            if (dialogOpen)
+                            {
+                                string panels = GetVisiblePanels();
+                                LogStateAction($"DIALOG_OPENED: {panels}");
+
+                                // AUTO-HOOK: Tự động hook buttons để log user clicks
+                                try
+                                {
+                                    string[] dialogPanelNames = {
+                                        "NpcInteractPanel(Clone)", "NpcInteractPanel",
+                                        "DialogPanel", "StoryPanel", "DlgNpc",
+                                        "ConfirmBox", "PanelMenu"
+                                    };
+                                    foreach (var pName in dialogPanelNames)
+                                    {
+                                        var panel = GameObject.Find(pName);
+                                        if (panel != null && panel.activeInHierarchy)
+                                        {
+                                            HookDialogButtons(panel);
+                                            // Log all available buttons in panel
+                                            var allBtns = panel.GetComponentsInChildren<Button>(true);
+                                            foreach (var b in allBtns)
+                                            {
+                                                if (b == null || !b.gameObject.activeSelf) continue;
+                                                string bName = b.gameObject.name ?? "?";
+                                                string bText = BotHelper.btnTextFromButton(b);
+                                                LogStateAction($"NPC_BTN_AVAILABLE: {bName} | Text: {bText} | Panel: {pName}");
+                                            }
+                                        }
+                                    }
+                                }
+                                catch { }
+                            }
+                            else
+                            {
+                                LogStateAction("DIALOG_CLOSED");
+                            }
+                            _logPrevDialogOpen = dialogOpen;
+                        }
+
+                        // --- VISIBLE PANELS CHANGED ---
+                        string curPanels = GetVisiblePanels();
+                        if (curPanels != _logPrevPanelState)
+                        {
+                            if (_logPrevPanelState != "" && _logPrevPanelState != "None")
+                                LogStateAction($"PANELS_CHANGED: [{_logPrevPanelState}] → [{curPanels}]");
+                            _logPrevPanelState = curPanels;
+                        }
+                    }
+                    catch { }
                 }
             }
 
@@ -839,13 +1342,7 @@ namespace AutoQuestPlugin
                     _pathfindCooldown -= Time.deltaTime;
 
                 // Skip pathfind nếu NPC dialog đang mở
-                bool dialogOpen = false;
-                try
-                {
-                    var npcPanelCheck = GameObject.Find("NpcInteractPanel(Clone)");
-                    dialogOpen = npcPanelCheck != null && npcPanelCheck.activeSelf && npcPanelCheck.activeInHierarchy;
-                }
-                catch { }
+                bool dialogOpen = IsDialogueOpen();
 
                 _pathfindTimer += Time.deltaTime;
                 // Fix: Nếu _killQuestDone (vừa đánh xong quái), cho phép pathfind ngay cả khi chưa idle (đang chạy/đánh)
@@ -858,8 +1355,62 @@ namespace AutoQuestPlugin
                     && _pathfindCooldown <= 0 && !dialogOpen && !isSpecialAction)
                 {
                     _pathfindTimer = 0f;
-                    TriggerAutoPathfind();
+
+                    // === NEW: CHECK FOR DIRECT MOVEMENT (MoveToMap) ===
+                    bool handled = false;
+                    try
+                    {
+                        var questText = GetCurrentQuestText();
+                        // Update Analysis if quest changed
+                        if (questText != _lastAnalyzedQuest)
+                        {
+                            _lastAnalyzedQuest = questText;
+                            if (!string.IsNullOrEmpty(questText))
+                                _currentQuestActionStep = QuestDatabase.GetActionForQuest(questText);
+                            else
+                                _currentQuestActionStep = null;
+                        }
+
+                        // Execute Direct Move if applicable
+                        if (_currentQuestActionStep != null && _currentQuestActionStep.Action == ActionType.MoveToMap)
+                        {
+                            ProcessAutoMovement(_currentQuestActionStep.TargetPos);
+                            handled = true;
+                        }
+                    }
+                    catch { }
+
+                    if (!handled)
+                    {
+                        // Stop any lingering movement keys
+                        ReleaseAllMovementKeys();
+                        TriggerAutoPathfind();
+                    }
                 }
+                else if (_autoQuestEnabled && _currentQuestActionStep != null && _currentQuestActionStep.Action == ActionType.MoveToMap)
+                {
+                    // DIRECT MOVE: Must run every frame (or frequent check) for smooth movement
+                    // The pathfindTimer check above is too slow (5s).
+                    // We need a faster timer for movement loop.
+                }
+
+                // === CONTINUOUS MOVEMENT LOOP (Outside Interval) ===
+                if (_autoQuestEnabled && inGame && !dialogOpen && _currentQuestActionStep != null && _currentQuestActionStep.Action == ActionType.MoveToMap)
+                {
+                    _autoMoveCheckTimer += Time.deltaTime;
+                     // Run movement logic every 0.1s
+                    if (_autoMoveCheckTimer >= 0.1f)
+                    {
+                         _autoMoveCheckTimer = 0f;
+                         ProcessAutoMovement(_currentQuestActionStep.TargetPos);
+                    }
+                }
+                else
+                {
+                    // Ensure keys are released if not moving
+                   if (_pressedKeys.Count > 0) ReleaseAllMovementKeys();
+                }
+
 
                 // Collect quest: click interact khi idle (quest "Thu thập" / "Nhặt")
                 if (_isCollectQuest && _idleTime >= 2f && !dialogOpen)
@@ -907,6 +1458,34 @@ namespace AutoQuestPlugin
                     _tutorialMoveTimer = 0f;
                     // Force using Key Press (TryTutorialMovement) - không thử ShortMissionPanel nữa vì nó là trap ở tutorial
                     TryTutorialMovement();
+                }
+            }
+            
+            // ======================== MODULE 1C: WAIT USER / CLICK ITEM ========================
+            if (_autoQuestEnabled && inGame && _currentQuestInfo != null)
+            {
+                if (_currentQuestInfo.Action == QuestAction.WAIT_USER)
+                {
+                    if (_idleTime > 5f) LogStateAction("WAIT_USER: Please perform action manually...");
+                }
+                else if (_currentQuestInfo.Action == QuestAction.CLICK_ITEM)
+                {
+                    // TODO: Implement Inventory Click
+                    if (_idleTime > 5f) LogStateAction("CLICK_ITEM: Auto-click item not implemented. Please use item.");
+                }
+            }
+
+            // ======================== MODULE 1C: WAIT USER / CLICK ITEM ========================
+            if (_autoQuestEnabled && inGame && _currentQuestInfo != null)
+            {
+                if (_currentQuestInfo.Action == QuestAction.WAIT_USER)
+                {
+                    if (_idleTime > 5f) LogStateAction("WAIT_USER: Please perform action manually...");
+                }
+                else if (_currentQuestInfo.Action == QuestAction.CLICK_ITEM)
+                {
+                    // TODO: Implement Inventory Click
+                    if (_idleTime > 5f) LogStateAction("CLICK_ITEM: Auto-click item not implemented. Please use item.");
                 }
             }
 
@@ -960,6 +1539,19 @@ namespace AutoQuestPlugin
                         // Let's create a helper to find and click skill button.
                         TryClickSkillButton(skillNum);
                     }
+                }
+            }
+
+            // ======================== MODULE 1D: AUTO TAME / WORLD INTERACT (AI-driven) ========================
+            // Handle quests like "Thuần phục Đại Vương Oloong" that require clicking the 3D character
+            if (_autoQuestEnabled && inGame && _currentQuestInfo != null && 
+                (_currentQuestInfo.QuestText.Contains("Thuần phục") || _currentQuestInfo.QuestText.Contains("thuần phục")))
+            {
+                _tameInteractTimer += Time.deltaTime;
+                if (_tameInteractTimer >= 1.0f) // Check every 1s
+                {
+                    _tameInteractTimer = 0f;
+                    TryTameInteraction();
                 }
             }
 
@@ -1056,7 +1648,15 @@ namespace AutoQuestPlugin
             }
 
             // ======================== MODULE 4: AUTO-DISMISS POPUPS (Phase 3) ========================
-            if (_autoDialogFlag && inGame)
+            // Update user activity time if any input detected
+            if (Input.anyKey || Input.GetMouseButtonDown(0) || Input.GetMouseButtonDown(1))
+            {
+                _lastUserActivityTime = Time.time;
+            }
+
+            bool isUserBusy = (Time.time - _lastUserActivityTime < 5.0f);
+
+            if (_autoDialogFlag && inGame && !isUserBusy)
             {
                 _popupDismissTimer += Time.deltaTime;
                 if (_popupDismissTimer >= _popupDismissInterval)
@@ -1067,7 +1667,7 @@ namespace AutoQuestPlugin
             }
 
             // ======================== MODULE 5: GUIDE/TUTORIAL DISMISS (Phase 3) ========================
-            if (_autoQuestEnabled && inGame)
+            if (_autoQuestEnabled && inGame && !isUserBusy)
             {
                 _guideDismissTimer += Time.deltaTime;
                 if (_guideDismissTimer >= _guideDismissInterval)
@@ -1132,6 +1732,18 @@ namespace AutoQuestPlugin
                 WriteStatusFile();
             }
 
+            // ======================== MODULE 9: TELEPORT STATE MACHINE ========================
+            if (inGame)
+            {
+                UpdateTeleport();
+                
+                // FIXED: Call Farm State Machine
+                if (_autoQuestEnabled)
+                {
+                    UpdateFarmState();
+                }
+            }
+
             // ======================== INPUT RECORDER (ghi lại click + phím của người chơi) ========================
             if (_stateLogRunning && inGame)
             {
@@ -1143,31 +1755,63 @@ namespace AutoQuestPlugin
                         try
                         {
                             var eventSystem = EventSystem.current;
-                            if (eventSystem != null && eventSystem.currentSelectedGameObject != null)
+                            if (eventSystem != null && eventSystem.IsPointerOverGameObject())
                             {
-                                var clicked = eventSystem.currentSelectedGameObject;
-                                if (clicked != _lastClickedObject)
+                                if (eventSystem.currentSelectedGameObject != null)
                                 {
-                                    _lastClickedObject = clicked;
-                                    string objName = clicked.name ?? "unknown";
-                                    string path = GetPath(clicked.transform);
-                                    
-                                    // Try get button text
-                                    string btnText = "";
-                                    try {
-                                        var tmp = clicked.GetComponentInChildren<TextMeshProUGUI>();
-                                        if (tmp != null) btnText = tmp.text ?? "";
-                                    } catch {}
-                                    
-                                    LogStateAction($"USER_CLICK: {objName} | Text: {btnText} | Path: {path}");
+                                    var clicked = eventSystem.currentSelectedGameObject;
+                                    if (clicked != _lastClickedObject)
+                                    {
+                                        _lastClickedObject = clicked;
+                                        string objName = clicked.name ?? "unknown";
+                                        string path = BotHelper.GetPath(clicked.transform);
+                                        
+                                        string btnText = "";
+                                        try {
+                                            var tmp = clicked.GetComponentInChildren<TextMeshProUGUI>();
+                                            if (tmp != null) btnText = tmp.text ?? "";
+                                        } catch {}
+                                        
+                                        LogStateAction($"USER_CLICK_UI: {objName} | Text: {btnText} | Path: {path}");
+                                    }
                                 }
                             }
                             else
                             {
                                 // Click không vào UI → click vào game world (có thể click NPC/mob)
-                                Vector3 mousePos = Input.mousePosition;
-                                LogStateAction($"USER_CLICK_WORLD: ScreenPos({mousePos.x:F0},{mousePos.y:F0})");
                                 _lastClickedObject = null;
+                                try {
+                                    Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+                                    RaycastHit hit;
+                                    if (Physics.Raycast(ray, out hit))
+                                    {
+                                        GameObject hitObj = hit.collider.gameObject;
+                                        string objName = hitObj.name ?? "unknown";
+                                        string tagStr = hitObj.tag ?? "";
+                                        
+                                        // Scan logic: check for mob/actor identifiers
+                                        string info = "";
+                                        try {
+                                            var comps = hitObj.GetComponents<Component>();
+                                            foreach (var c in comps) {
+                                                if (c == null) continue;
+                                                string tName = c.GetIl2CppType().Name;
+                                                if (tName.Contains("Mob") || tName.Contains("Boss") || 
+                                                    tName.Contains("Actor") || tName.Contains("NPC"))
+                                                    info += $"[{tName}] ";
+                                            }
+                                        } catch { }
+
+                                        LogStateAction($"USER_CLICK_3D: {objName} | Tag: {tagStr} | Info: {info}| Pos: {hit.point.x:F1},{hit.point.y:F1},{hit.point.z:F1}");
+                                    }
+                                    else {
+                                        Vector3 mousePos = Input.mousePosition;
+                                        LogStateAction($"USER_CLICK_WORLD: ScreenPos({mousePos.x:F0},{mousePos.y:F0})");
+                                    }
+                                } catch {
+                                    Vector3 mousePos = Input.mousePosition;
+                                    LogStateAction($"USER_CLICK_WORLD_ERR: ScreenPos({mousePos.x:F0},{mousePos.y:F0})");
+                                }
                             }
                         }
                         catch { }
@@ -1185,6 +1829,17 @@ namespace AutoQuestPlugin
                 catch { }
             }
 
+            // Tame Interaction (Phase 3)
+            if (_autoQuestEnabled && inGame && _currentQuestInfo != null && _currentQuestInfo.Type == QuestType.TAME)
+            {
+                _tameInteractTimer += Time.deltaTime;
+                if (_tameInteractTimer >= 1.0f) // Check mỗi 1s
+                {
+                    _tameInteractTimer = 0f;
+                    TryTameInteraction();
+                }
+            }
+
             // ======================== STATE OBSERVER (inline logging) ========================
             if (_stateLogRunning)
             {
@@ -1192,7 +1847,7 @@ namespace AutoQuestPlugin
                 {
                     string qText = GetCurrentQuestText();
                     int stateId = qText.GetHashCode();
-                    int stepIdx = GetQuestStepIndex(qText);
+                    int stepIdx = BotHelper.GetQuestStepIndex(qText);
                     string loc = GetCurrentMapName() ?? "null";
                     string target = "None";
 
@@ -1287,22 +1942,37 @@ namespace AutoQuestPlugin
                 }
                 catch { }
 
+                // Determine Status Message
+                string statusMsg = "";
+                if (GlobalPauseCheck()) statusMsg = "⛔ Tạm dừng (User)";
+                else if (_isPlayerDead) statusMsg = "💀 Chờ hồi sinh...";
+                else if (_stuckCounter > 10) statusMsg = "⚠️ Đang gỡ kẹt...";
+                else if (_autoQuestEnabled)
+                {
+                     if (_inCombatZone) statusMsg = "⚔️ Đang chiến đấu";
+                     else statusMsg = "🏃 Đang làm nhiệm vụ";
+                }
+                else if (_autoAttackEnabled) statusMsg = "⚔️ Treo đánh quái";
+                else statusMsg = "💤 Đang nghỉ";
+
                 // Build JSON manually (no System.Text.Json in IL2CPP)
                 string json = "{\n" +
-                    $"  \"username\": \"{EscapeJson(_loginUsername)}\",\n" +
-                    $"  \"scene\": \"{EscapeJson(_currentScene)}\",\n" +
-                    $"  \"map\": \"{EscapeJson(mapName)}\",\n" +
-                    $"  \"zone\": \"{EscapeJson(zoneName)}\",\n" +
+                    $"  \"username\": \"{BotHelper.EscapeJson(_loginUsername)}\",\n" +
+                    $"  \"scene\": \"{BotHelper.EscapeJson(_currentScene)}\",\n" +
+                    $"  \"map\": \"{BotHelper.EscapeJson(mapName)}\",\n" +
+                    $"  \"zone\": \"{BotHelper.EscapeJson(zoneName)}\",\n" +
+                    $"  \"level\": \"{GetPlayerLevel()}\",\n" +
                     $"  \"posX\": \"{posX}\",\n" +
                     $"  \"posY\": \"{posY}\",\n" +
-                    $"  \"quest\": \"{EscapeJson(questText)}\",\n" +
-                    $"  \"questHint\": \"{EscapeJson(questHint)}\",\n" +
+                    $"  \"quest\": \"{BotHelper.EscapeJson(questText)}\",\n" +
+                    $"  \"questHint\": \"{BotHelper.EscapeJson(questHint)}\",\n" +
+                    $"  \"status\": \"{BotHelper.EscapeJson(statusMsg)}\",\n" +
                     $"  \"autoEnabled\": {(_autoQuestEnabled ? "true" : "false")},\n" +
                     $"  \"attackEnabled\": {(_autoAttackEnabled ? "true" : "false")},\n" +
                     $"  \"headless\": {(_headlessMode ? "true" : "false")},\n" +
                     $"  \"collectQuest\": {(_isCollectQuest ? "true" : "false")},\n" +
-                    $"  \"lastBoss\": \"{EscapeJson(_lastBossNotification)}\",\n" +
-                    $"  \"lastBossMap\": \"{EscapeJson(_lastBossMap)}\",\n" +
+                    $"  \"lastBoss\": \"{BotHelper.EscapeJson(_lastBossNotification)}\",\n" +
+                    $"  \"lastBossMap\": \"{BotHelper.EscapeJson(_lastBossMap)}\",\n" +
                     $"  \"timestamp\": \"{DateTime.Now:HH:mm:ss}\"\n" +
                     "}";
 
@@ -1311,11 +1981,7 @@ namespace AutoQuestPlugin
             catch { /* Ignore file write errors */ }
         }
 
-        private string EscapeJson(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "");
-        }
+
 
         // ======================== AUTO LOGIN (FIX) ========================
         // Dùng Unity API trực tiếp: TMP_InputField.text và Button.onClick.Invoke()
@@ -1334,7 +2000,7 @@ namespace AutoQuestPlugin
             try
             {
                 // Cách 1: Tìm LoginPanel GameObject rồi lấy TMP_InputField children
-                var loginPanel = FindSingletonByType("LoginPanel");
+                var loginPanel = BotHelper.FindSingletonByType("LoginPanel");
                 if (loginPanel == null)
                 {
                     Plugin.Log.LogWarning("[Bot] LoginPanel chưa tìm thấy! Thử tìm trên toàn scene...");
@@ -1542,8 +2208,16 @@ namespace AutoQuestPlugin
                         Plugin.Log.LogInfo($"[Bot] 🎮 Clicked '{name}' trên CharacterChoosingPanel → vào game!");
 
                         // Schedule auto-enable quest system sau 8s (chờ game load xong)
-                        _autoEnableQuestTimer = 8f;
-                        Plugin.Log.LogInfo("[Bot] 🎮 Sẽ tự động bật Auto Quest sau 8s...");
+                        // CHỈ bật nếu config cho phép autoQuest
+                        if (_configAutoQuest)
+                        {
+                            _autoEnableQuestTimer = 8f;
+                            Plugin.Log.LogInfo("[Bot] 🎮 Sẽ tự động bật Auto Quest sau 8s...");
+                        }
+                        else
+                        {
+                            Plugin.Log.LogInfo("[Bot] 🎮 Auto Quest đã TẮT trong config → không tự bật.");
+                        }
                         return;
                     }
                 }
@@ -1551,7 +2225,7 @@ namespace AutoQuestPlugin
                 {
                     Plugin.Log.LogInfo("[Bot] 🎮 CharacterChoosingPanel đã tắt → có thể đã vào game!");
                     // Vẫn schedule auto-enable phòng trường hợp panel đóng trước khi timer fire
-                    if (_autoEnableQuestTimer < 0)
+                    if (_autoEnableQuestTimer < 0 && _configAutoQuest)
                     {
                         _autoEnableQuestTimer = 5f;
                         Plugin.Log.LogInfo("[Bot] 🎮 Sẽ tự động bật Auto Quest sau 5s...");
@@ -1615,47 +2289,7 @@ namespace AutoQuestPlugin
         // ======================== JSON PARSER ========================
         // Chỉ dùng string/int return types (IL2CPP compatible)
 
-        private string ParseJsonString(string json, string key)
-        {
-            string search = $"\"{key}\"";
-            int idx = json.IndexOf(search);
-            if (idx < 0) return "";
-            int colonIdx = json.IndexOf(':', idx + search.Length);
-            if (colonIdx < 0) return "";
-            int quoteStart = json.IndexOf('"', colonIdx + 1);
-            if (quoteStart < 0) return "";
-            int quoteEnd = json.IndexOf('"', quoteStart + 1);
-            if (quoteEnd < 0) return "";
-            return json.Substring(quoteStart + 1, quoteEnd - quoteStart - 1);
-        }
 
-        private int ParseJsonInt(string json, string key)
-        {
-            string search = $"\"{key}\"";
-            int idx = json.IndexOf(search);
-            if (idx < 0) return 0;
-            int colonIdx = json.IndexOf(':', idx + search.Length);
-            if (colonIdx < 0) return 0;
-            string rest = json.Substring(colonIdx + 1).TrimStart();
-            string numStr = "";
-            foreach (char c in rest)
-            {
-                if (char.IsDigit(c) || c == '-') numStr += c;
-                else if (numStr.Length > 0) break;
-            }
-            return int.TryParse(numStr, out int result) ? result : 0;
-        }
-
-        private bool ParseJsonBool(string json, string key)
-        {
-            string search = $"\"{key}\"";
-            int idx = json.IndexOf(search);
-            if (idx < 0) return false;
-            int colonIdx = json.IndexOf(':', idx + search.Length);
-            if (colonIdx < 0) return false;
-            string rest = json.Substring(colonIdx + 1).TrimStart();
-            return rest.StartsWith("true", StringComparison.OrdinalIgnoreCase);
-        }
 
         // ======================== AUTO ALL (QUEST + ATTACK + INTERACT) ========================
 
@@ -1681,7 +2315,7 @@ namespace AutoQuestPlugin
                 {
                     try
                     {
-                        CallMethod(_autoMissionManager, "auto");
+                        BotHelper.CallMethod(_autoMissionManager, "auto");
                         Plugin.Log.LogInfo("[Bot] ✅ [QUEST] Auto Quest: BẬT");
                     }
                     catch (Exception ex) { Plugin.Log.LogWarning($"[Bot] Auto Quest error: {ex.Message}"); }
@@ -1701,7 +2335,8 @@ namespace AutoQuestPlugin
                 {
                     try
                     {
-                        CallMethod(_mainGame, "setPlayerOnAutoMode");
+                        // FIXED: setPlayerOnAutoMode needs a bool parameter
+                        BotHelper.CallMethod(_mainGame, "setPlayerOnAutoMode", new object[] { true });
                         Plugin.Log.LogInfo("[Bot] ✅ setPlayerOnAutoMode: BẬT");
                     }
                     catch (Exception ex) { Plugin.Log.LogWarning($"[Bot] setPlayerOnAutoMode error: {ex.Message}"); }
@@ -1723,7 +2358,7 @@ namespace AutoQuestPlugin
 
                 if (_autoMissionManager != null)
                 {
-                    try { CallMethod(_autoMissionManager, "stop"); } catch { }
+                    try { BotHelper.CallMethod(_autoMissionManager, "stop"); } catch { }
                 }
                 ToggleAutoAttack(false);
             }
@@ -1751,6 +2386,13 @@ namespace AutoQuestPlugin
             Plugin.Log.LogInfo($"[Bot] [DIALOG] Auto NPC Dialog: {(_autoDialogFlag ? "BẬT" : "TẮT")} (F5)");
         }
 
+        // === SMART LOOP DETECTION FIELDS ===
+        private string _lastClickedButtonSignature = "";
+        private int _clickSpamCount = 0;
+        private HashSet<string> _ignoredButtonSignatures = new HashSet<string>();
+        private float _lastDialogActionTime = 0f;
+
+
         // ======================== FARM STATE MACHINE ========================
 
         /// <summary>
@@ -1765,13 +2407,53 @@ namespace AutoQuestPlugin
                 bool hasQuest = !string.IsNullOrEmpty(currentQuest);
                 
                 // Detect NPC dialog đang mở
-                bool dialogOpen = false;
-                try
+                bool dialogOpen = IsDialogueOpen();
+
+                // === USER PAUSE CHECK ===
+                if (Time.time - _lastUserActionTime < 5f)
                 {
-                    var npcPanel = GameObject.Find("NpcInteractPanel(Clone)");
-                    dialogOpen = npcPanel != null && npcPanel.activeSelf && npcPanel.activeInHierarchy;
+                     // User is active -> Pause Bot
+                     // Optional: Show status "Paused by User"
+                     return; 
                 }
-                catch { }
+
+                // === ANTI-STUCK LOOP CHECK ===
+                _stuckCheckTimer += Time.deltaTime;
+                if (_stuckCheckTimer >= 1.0f) // Check per second
+                {
+                    _stuckCheckTimer = 0f;
+                    // Hash check (ignore numbers)
+                    string questHash = System.Text.RegularExpressions.Regex.Replace(currentQuest, @"\d+", "#");
+                    
+                    if (questHash == _stuckCheckQuest && !string.IsNullOrEmpty(currentQuest))
+                    {
+                        _stuckCounter++;
+                        // 15 seconds threshold
+                        if (_stuckCounter >= 15)
+                        {
+                            Plugin.Log.LogWarning($"[Bot] ⚠️ STUCK DETECTED! Quest unchanged for 15s. Escaping NPC...");
+                            
+                            // 1. Close Panels
+                            CloseAllPanels();
+
+                            // 2. Click Outside (Center of Screen)
+                            ClickOutsideUI();
+
+                            // 3. Force re-click quest
+                            TriggerAutoPathfind(true); 
+                            
+                            _stuckCounter = 0; // Reset
+                        }
+                    }
+                    else
+                    {
+                        _stuckCheckQuest = questHash;
+                        _stuckCounter = 0;
+                    }
+                }
+
+                // Update quest flags FIRST to fix race condition
+                AnalyzeQuest(currentQuest);
 
                 // Detect kill quest progress
                 bool isKillQuest = false;
@@ -1830,6 +2512,17 @@ namespace AutoQuestPlugin
 
                     // --- PATHFINDING: Đang di chuyển đến target ---
                     case FarmState.PATHFINDING:
+                        // Action: Click ShortMissionPanel periodicaly
+                        if (_pathfindCooldown <= 0f)
+                        {
+                            TriggerAutoPathfind();
+                            _pathfindCooldown = _pathfindInterval; // Reset cooldown (e.g. 3s)
+                        }
+                        else
+                        {
+                             _pathfindCooldown -= Time.deltaTime;
+                        }
+
                         // Quest thay đổi = đã nhận quest → chuyển trạng thái
                         if (hasQuest && currentQuest != _farmQuestAtStart)
                         {
@@ -1881,6 +2574,16 @@ namespace AutoQuestPlugin
 
                     // --- TALKING_NPC: Đang trong dialog ---
                     case FarmState.TALKING_NPC:
+                        // Action: Click Dialog Options
+                        if (_dialogueCooldownTimer <= 0f)
+                        {
+                            HandleDialogue();
+                        }
+                        else
+                        {
+                            _dialogueCooldownTimer -= Time.deltaTime;
+                        }
+
                         if (!dialogOpen)
                         {
                             // Dialog đóng → kiểm tra quest có thay đổi
@@ -2018,6 +2721,12 @@ namespace AutoQuestPlugin
             string msg = $"FARM: {old} → {newState} | {reason} | Quests: {_farmQuestsCompleted} | Time: {_farmTotalTime:F0}s";
             LogStateAction(msg);
             Plugin.Log.LogInfo($"[Farm] {msg}");
+
+            // Auto-Attack Logic Integration
+            if (newState == FarmState.KILLING)
+            {
+                EnsureAutoAttack();
+            }
         }
 
         /// <summary>
@@ -2043,7 +2752,7 @@ namespace AutoQuestPlugin
                         var tmp = btn.GetComponentInChildren<TextMeshProUGUI>();
                         if (tmp != null) btnText = tmp.text ?? "";
                     } catch {}
-                    string path = GetPath(btn.transform);
+                    string path = BotHelper.GetPath(btn.transform);
 
                     // Capture local copies for closure
                     string capName = btnName;
@@ -2079,103 +2788,138 @@ namespace AutoQuestPlugin
         }
 
         /// <summary>
-        /// Click ShortMissionPanel để kích hoạt auto-pathfind đến quest NPC
-        /// Có quest detection: kill quest thì skip, same quest thì giới hạn click
+        /// Phân tích quest text để xác định cờ _isCollectQuest và các thông tin khác
         /// </summary>
-        private void TriggerAutoPathfind()
+        private void AnalyzeQuest(string questText)
         {
             try
             {
+                if (string.IsNullOrEmpty(questText)) return;
+
+                // Quest "Thu thập", "Nhặt", "Collect" cũng có dạng (X/Y) nhưng KHÔNG phải kill quest
+                _isCollectQuest = questText.Contains("Thu thập") || questText.Contains("Nhặt") 
+                    || questText.Contains("Collect") || questText.Contains("Lượm")
+                    || questText.Contains("thu thập") || questText.Contains("nhặt")
+                    || questText.Contains("Tìm") || questText.Contains("tìm")
+                    || questText.Contains("Lấy") || questText.Contains("lấy")
+                    || questText.Contains("Gặp") || questText.Contains("gặp")
+                    || questText.Contains("Sử dụng") || questText.Contains("Dùng")
+                    || mergeQuestKeywords(questText);
+
+                // Helper for additional keywords
+                bool mergeQuestKeywords(string text) {
+                    return text.Contains("Thuần phục") || text.Contains("thuần phục")
+                        || text.Contains("Đánh") || text.Contains("đánh")
+                        || text.Contains("Thách đấu") || text.Contains("thách đấu"); // Added Thách đấu
+                }
+            }
+            catch {}
+        }
+
+        /// <summary>
+        /// Click ShortMissionPanel để kích hoạt auto-pathfind đến quest NPC
+        /// Có quest detection: kill quest thì skip, same quest thì giới hạn click
+        /// </summary>
+        private void TriggerAutoPathfind(bool force = false)
+        {
+            try
+            {
+                // === 0. Strict Dialog Check ===
+                if (IsDialogueOpen())
+                {
+                    Plugin.Log.LogInfo("[Bot] 🛑 Pathfind ABORTED: Dialog is open -> Switch to HandleDialogue");
+                    HandleDialogue(); // Tự động xử lý dialog thay vì đứng im
+                    return;
+                }
+
+                // === 0.1 Cooldown Check ===
+                if (_dialogueCooldownTimer > 0f)
+                {
+                    _dialogueCooldownTimer -= Time.deltaTime;
+                    return; // Đợi cooldown
+                }
+
                 // === 1. Đọc quest text hiện tại ===
                 string questText = GetCurrentQuestText();
 
                 if (!string.IsNullOrEmpty(questText))
                 {
-                    // === 2. Collect quest detection (TRƯỚC kill quest) ===
-                    // Quest "Thu thập", "Nhặt", "Collect" cũng có dạng (X/Y) nhưng KHÔNG phải kill quest
-                    _isCollectQuest = questText.Contains("Thu thập") || questText.Contains("Nhặt") 
-                        || questText.Contains("Collect") || questText.Contains("Lượm")
-                        || questText.Contains("thu thập") || questText.Contains("nhặt")
-                        || questText.Contains("Tìm") || questText.Contains("tìm")
-                        || questText.Contains("Lấy") || questText.Contains("lấy")
-                        || questText.Contains("Gặp") || questText.Contains("gặp")
-                        || questText.Contains("Sử dụng") || questText.Contains("Dùng")
-                        || questText.Contains("Đến") || questText.Contains("đến");
+                    // Update quest flags
+                    AnalyzeQuest(questText);
 
                     // === 3. Kill quest detection: có dạng (X/Y) thì SKIP pathfind ===
-                    // CHỈ skip nếu KHÔNG phải collect quest
-                    if (!_isCollectQuest)
+                    // CHỈ skip nếu KHÔNG phải collect quest và KHÔNG phải tame quest
+                    // FIX: If 'force' is true (Idle detected), ignore kill quest skip and CLICK anyway
+                    if (!force && !_isCollectQuest && (_currentQuestInfo == null || _currentQuestInfo.Type != QuestType.TAME))
                     {
-                        int parenOpen = questText.IndexOf('(');
-                        if (parenOpen >= 0)
-                        {
+                        // Logic parsing kill quest để log (đã có trong UpdateFarmState, ở đây chỉ để log action)
+                        // ...
+                        // Simplify: Trust _isCollectQuest checks
+                         int parenOpen = questText.IndexOf('(');
+                         if (parenOpen >= 0)
+                         {
+                             // Check if valid 0/1 logic...
+                             // For simplicity: If it's NOT collect/tame, and has (X/Y), let UpdateFarmState handle the switching.
+                             // TriggerAutoPathfind just clicks if we are here.
+                             // But we should LOG consistent with state.
+                             // ... (Existing parsing logic for logging) ...
+                             
+                             // Re-using existing parsing block for consistency
                             int parenClose = questText.IndexOf(')', parenOpen);
                             if (parenClose > parenOpen)
                             {
                                 string inside = questText.Substring(parenOpen + 1, parenClose - parenOpen - 1);
-                                int slash = inside.IndexOf('/');
+                                // ... (Cleaning logic) ...
+                                string cleaned = inside;
+                                while (cleaned.Contains("<color"))
+                                {
+                                    int tagStart = cleaned.IndexOf("<color");
+                                    int tagEnd = cleaned.IndexOf('>', tagStart);
+                                    if (tagEnd > tagStart)
+                                        cleaned = cleaned.Substring(0, tagStart) + cleaned.Substring(tagEnd + 1);
+                                    else break;
+                                }
+                                cleaned = cleaned.Replace("</color>", "");
+                                int slash = cleaned.IndexOf('/');
                                 if (slash > 0)
                                 {
-                                    // Remove color tags trước khi parse
-                                    string cleaned = inside;
-                                    while (cleaned.Contains("<color"))
+                                    string left = cleaned.Substring(0, slash).Trim();
+                                    string right = cleaned.Substring(slash + 1).Trim();
+                                    int cur, total;
+                                    if (int.TryParse(left, out cur) && int.TryParse(right, out total))
                                     {
-                                        int tagStart = cleaned.IndexOf("<color");
-                                        int tagEnd = cleaned.IndexOf('>', tagStart);
-                                        if (tagEnd > tagStart)
-                                            cleaned = cleaned.Substring(0, tagStart) + cleaned.Substring(tagEnd + 1);
-                                        else break;
-                                    }
-                                    cleaned = cleaned.Replace("</color>", "");
-                                    slash = cleaned.IndexOf('/');
-                                    if (slash > 0)
-                                    {
-                                        string left = cleaned.Substring(0, slash).Trim();
-                                        string right = cleaned.Substring(slash + 1).Trim();
-                                        int cur, total;
-                                        if (int.TryParse(left, out cur) && int.TryParse(right, out total))
+                                        if (cur < total)
                                         {
-                                            if (cur < total)
+                                            LogActivity($"⚔️ Kill quest: {questText} ({cur}/{total}) → pathfind click");
+                                            _killQuestDone = false;
+                                        }
+                                        else
+                                        {
+                                            if (!_killQuestDone)
                                             {
-                                                LogActivity($"⚔️ Kill quest: {questText} ({cur}/{total}) → pathfind click");
-                                                _killQuestDone = false;
-                                                // Removed return: user says clicking during kill quest also auto-attacks properly
-                                            }
-                                            else
-                                            {
-                                                // cur >= total → Kill quest HOÀN THÀNH! Force pathfind về NPC NGAY
-                                                if (!_killQuestDone)
-                                                {
-                                                    _killQuestDone = true;
-                                                    _sameQuestPathfindCount = 0;
-                                                    _pathfindCooldown = 0;
-                                                    LogActivity($"✅ Kill quest XONG: {questText} ({cur}/{total}) → pathfind về NPC!");
-                                                }
-                                                // KHÔNG return → fall through xuống phần click ShortMissionPanel
+                                                _killQuestDone = true;
+                                                _sameQuestPathfindCount = 0;
+                                                _pathfindCooldown = 0;
+                                                LogActivity($"✅ Kill quest XONG: {questText} ({cur}/{total}) → pathfind về NPC!");
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
+                         }
                     }
                     else
                     {
-                        LogActivity($"📦 Collect quest: {questText} → pathfind to NPC");
+                        LogActivity($"📦 Collect/Talk quest: {questText} → pathfind to NPC");
                     }
 
                     // === 4. Quest change detection ===
                     if (questText == _trackedQuestText)
                     {
                         _sameQuestPathfindCount++;
-                        if (_sameQuestPathfindCount >= _maxSameQuestPathfinds)
-                        {
-                            // Removed return: User wants continuous clicking even for same quest
-                        }
                     }
                     else
                     {
-                        // Quest thay đổi → reset counter
                         _trackedQuestText = questText;
                         _sameQuestPathfindCount = 0;
                         LogActivity($"🌟 Quest mới: {questText}{(_isCollectQuest ? " (📦 collect)" : "")}");
@@ -2202,7 +2946,7 @@ namespace AutoQuestPlugin
                         var hudCanvas = GameObject.Find("HUDCanvas");
                         if (hudCanvas != null)
                         {
-                            var found = FindInactiveChild(hudCanvas.transform, "ShortMissionPanel");
+                            var found = BotHelper.FindInactiveChild(hudCanvas.transform, "ShortMissionPanel");
                             if (found != null)
                             {
                                 _shortMissionBtn = found.GetComponent<Button>();
@@ -2233,19 +2977,52 @@ namespace AutoQuestPlugin
 
                     // Click it!
                     _shortMissionBtn.onClick.Invoke();
+                    
+                    // Reset failure count on success (if we reached this point, we clicked)
+                    _consecutivePathfindFailures = 0; 
+
                     _pathfindCooldown = _pathfindCooldownTime;
                     _idleTime = 0f;
-                    LogActivity("🚀 Pathfind: Clicked quest panel → đi đến NPC");
-                    LogStateAction("PATHFIND click ShortMissionPanel → moving to NPC");
+                    LogActivity($"🚀 Pathfind: Clicked quest panel");
+                    LogStateAction($"PATHFIND click ShortMissionPanel → moving to NPC");
                 }
                 else
                 {
-                    Plugin.Log.LogWarning("[Bot] ❌ ShortMissionPanel not found (cả qua Find và hierarchy search)");
+                    _consecutivePathfindFailures++;
+                    Plugin.Log.LogWarning($"[Bot] ❌ ShortMissionPanel not found (Failures: {_consecutivePathfindFailures})");
+
+                    // Refresh managers every 3 failures
+                    if (_consecutivePathfindFailures % 3 == 0)
+                    {
+                        Plugin.Log.LogInfo("[Bot] 🔄 Re-scanning managers to refresh UI references...");
+                        FindManagers();
+                    }
+
+                    // Direct Search Fallback
+                    if (_consecutivePathfindFailures >= 5)
+                    {
+                         TryFindTargetAndMove(); 
+                    }
+
+                    // Force Expand Fallback
+                    if (_consecutivePathfindFailures >= 10)
+                    {
+                        var quickInfo = GameObject.Find("QuickInfoPanel");
+                        if (quickInfo != null)
+                        {
+                            quickInfo.SetActive(true);
+                            var expand = quickInfo.transform.parent?.Find("ExpandButton")?.gameObject;
+                            if (expand != null) expand.SetActive(true);
+                        }
+                    }
+
+                    _pathfindCooldown = _pathfindCooldownTime * 2f; // Slow down retries on failure
                 }
             }
             catch (Exception ex)
             {
                 Plugin.Log.LogWarning($"[Bot] Auto Pathfind error: {ex.Message}");
+                _pathfindCooldown = _pathfindCooldownTime;
             }
         }
 
@@ -2265,6 +3042,68 @@ namespace AutoQuestPlugin
         private const byte VK_A = 0x41;
         private const byte VK_S = 0x53;
         private const byte VK_D = 0x44;
+
+        // === AUTO MOVEMENT HELPERS ===
+        
+        private void ProcessAutoMovement(Vector3? targetPos)
+        {
+            if (targetPos == null) return;
+            Vector3 target = targetPos.Value;
+
+            // Check if we are on the correct map?
+            // Assuming same map for now or BotController logic handles map check elsewhere.
+            
+            // Check distance
+            float dist = Vector3.Distance(_lastPlayerPos, target);
+            if (dist < 1.5f) // Arrived (1.5m tolerance)
+            {
+                 ReleaseAllMovementKeys();
+                 // Optionally interact or wait?
+                 return;
+            }
+
+            // Calculate direction
+            Vector3 dir = (target - _lastPlayerPos).normalized;
+            
+            // Simple 8-direction WASD
+            // Priority: W/S then A/D
+            
+            bool up = dir.z > 0.3f;    // Threshold 0.3 to allow diagonal
+            bool down = dir.z < -0.3f;
+            bool right = dir.x > 0.3f;
+            bool left = dir.x < -0.3f;
+            
+            SetKeyStatus(VK_W, up);
+            SetKeyStatus(VK_S, down);
+            SetKeyStatus(VK_D, right);
+            SetKeyStatus(VK_A, left);
+            
+            // Keep idle timer low so we appear "Active"
+            _idleTime = 0f;
+        }
+
+        private void SetKeyStatus(byte key, bool press)
+        {
+             bool isPressed = _pressedKeys.Contains(key);
+             if (press && !isPressed) {
+                 keybd_event(key, 0, KEYEVENTF_EXTENDEDKEY, 0); // Press
+                 _pressedKeys.Add(key);
+             }
+             else if (!press && isPressed) {
+                 keybd_event(key, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0); // Release
+                 _pressedKeys.Remove(key);
+             }
+        }
+
+        private void ReleaseAllMovementKeys()
+        {
+            if (_pressedKeys.Count == 0) return;
+            // Copy to list to avoid modification exception
+            var keys = new List<byte>(_pressedKeys);
+            foreach(var k in keys) SetKeyStatus(k, false);
+            Plugin.Log.LogInfo("[Bot] 🛑 Released all movement keys.");
+        }
+
 
         /// <summary>
         /// Tutorial movement: khi quest yêu cầu di chuyển nhưng ShortMissionPanel không khả dụng.
@@ -2297,7 +3136,7 @@ namespace AutoQuestPlugin
                 
                 // Simple approach: Press and Release immediately implies "tap". 
                 // Movement usually needs "hold".
-                // Let's release 100ms later using a Thread or just hope tap works?
+                // Let's release 100ms later using a Thread or just hope tap works. 
                 // User said "ấn nút", maybe multiple taps works. 
                 // Let's try Press -> Sleep 200ms -> Release
                 
@@ -2334,6 +3173,364 @@ namespace AutoQuestPlugin
             {
                 Plugin.Log.LogWarning($"[Bot] TryTutorialMovement error: {ex.Message}");
             }
+        }
+
+        private float _tameInteractTimer = 0f;
+        
+        /// <summary>
+        /// Logic chuyên biệt cho quest "Thuần phục": tìm target trong 3D world và "click" vào nó
+        /// </summary>
+        private void TryTameInteraction()
+        {
+            try
+            {
+                if (_currentQuestInfo == null || string.IsNullOrEmpty(_currentQuestInfo.Target)) return;
+                
+                string targetName = _currentQuestInfo.Target;
+                var obj = FindClosestObject(targetName);
+                
+                if (obj != null)
+                {
+                    float dist = Vector3.Distance(_lastPlayerPos, obj.transform.position);
+                    
+                    // Nếu đang ở gần (< 5m), thử tương tác
+                    if (dist <= 5f)
+                    {
+                        Plugin.Log.LogInfo($"[Bot] 🎯 Tame Target found: '{obj.name}' at {dist:F1}m. Attempting interaction...");
+                        
+                        // 1. Thử gọi các method tương tác phổ biến qua Reflection
+                        bool interacted = false;
+                        var comps = obj.GetComponents<Component>();
+                        foreach (var c in comps)
+                        {
+                            if (c == null) continue;
+                            var type = c.GetIl2CppType();
+                            
+                            // Method names to search for
+                            string[] interactMethods = { "Interact", "OnClick", "OnPointerClick", "OnMouseDown", "Talk", "Execute" };
+                            
+                            foreach (var mName in interactMethods)
+                            {
+                                try
+                                {
+                                    Il2CppSystem.Reflection.MethodInfo m = null;
+                                    foreach (var method in type.GetMethods()) { if (method.Name.Equals(mName, StringComparison.OrdinalIgnoreCase)) { m = method; break; } }
+                                    if (m != null)
+                                    {
+                                        // OnPointerClick typically needs PointerEventData, others might be parameterless
+                                        if (m.GetParameters().Length == 0)
+                                        {
+                                            m.Invoke(c, null);
+                                            Plugin.Log.LogInfo($"[Bot] 🤝 Interacted with '{obj.name}' via {type.Name}.{m.Name}()");
+                                            interacted = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                catch { }
+                            }
+                            if (interacted) break;
+                        }
+
+                        if (interacted)
+                        {
+                            LogStateAction($"TAME_INTERACT: Clicked {obj.name}");
+                            LogStateAction($"TAME_INTERACT: Clicked {obj.name}");
+                            _consecutivePathfindFailures = 0;
+                            // Auto-Attack after tame interaction
+                            EnsureAutoAttack();
+                        }
+                        else
+                        {
+                            // Fallback: Nếu không tìm thấy method, log ra để user biết tên Component
+                            var compNames = new System.Collections.Generic.List<string>();
+                            foreach (var comp in comps) { if (comp != null) compNames.Add(comp.GetIl2CppType().Name); }
+                            string compList = string.Join(", ", compNames);
+                            Plugin.Log.LogWarning($"[Bot] ⚠️ Found target but no interact method. Components: [{compList}]");
+                            
+                            // FORCE Auto-Attack anyway (cho trường hợp mob cần đánh)
+                            EnsureAutoAttack();
+                        }
+                    }
+                    else
+                    {
+                        // Chưa đến gần -> Pathfind sẽ lo, nhưng ta log progress
+                        // Plugin.Log.LogInfo($"[Bot] 🏃 Tame target '{obj.name}' is too far ({dist:F1}m). Pathfinding...");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[Bot] TryTameInteraction error: {ex.Message}");
+            }
+        }
+
+        // ======================== FALLBACK SEARCH ========================
+        private void TryFindTargetAndMove()
+        {
+            if (_currentQuestInfo == null || string.IsNullOrEmpty(_currentQuestInfo.Target)) return;
+
+            string target = _currentQuestInfo.Target;
+            Plugin.Log.LogInfo($"[Bot] Active Search: Looking for '{target}'...");
+
+            // 1. Search target name
+            var obj = FindClosestObject(target);
+            
+            // 2. Search specific hints (Tàu Sayyan -> Tau / Ship / Arrow)
+            if (obj == null && (target.Contains("Tàu") || target.Contains("Tìm")))
+            {
+                obj = FindClosestObject("Tau");
+                if (obj == null) obj = FindClosestObject("Ship");
+                if (obj == null) obj = FindClosestObject("Arrow"); // Mũi tên hướng dẫn
+                if (obj == null) obj = FindClosestObject("Indicator");
+            }
+            
+            // 3. Search for "Thịt Sói" (Drop item?)
+            if (obj == null && target.Contains("Thịt"))
+            {
+                 obj = FindClosestObject("Item"); 
+            }
+
+            if (obj != null)
+            {
+                Plugin.Log.LogInfo($"[Bot] Active Search: Found '{obj.name}' at {obj.transform.position}.");
+                Plugin.Log.LogInfo($"[Bot] >>> PLEASE MOVE MANUALLY TO TARGET <<<");
+                LogStateAction($"ACTIVE_SEARCH: Found {obj.name} -> Please Move Manually");
+                _consecutivePathfindFailures = 0; // Reset to avoid spam
+            }
+        }
+
+        // ======================== HELPER: DIALOG DETECTION & HANDLING ========================
+        
+        private float _dialogueCooldownTimer = 0f;
+        private float _lastAutoAttackTriggerTime = 0f;
+
+        /// <summary>
+        /// Ensures game's Auto Attack mode is enabled.
+        /// Throttled to prevent spamming.
+        /// </summary>
+        private void EnsureAutoAttack()
+        {
+            try
+            {
+                // Respect user's manual toggle (F3 or command) — unless LiteMode is ON
+                if (!_autoAttackFlag && !_liteMode) return;
+                if (!_autoAttackEnabled) return; // Respect 'toggle attack' command
+
+                if (Time.time - _lastAutoAttackTriggerTime < 5.0f) return; // Throttle to 5s to reduce log spam
+
+                // Sync with game's internal state
+                bool gameOnAuto = false;
+                if (_mainGame != null) {
+                    try { gameOnAuto = BotHelper.CallMethodReturn<bool>(_mainGame, "get_isOnAutoMode"); } catch {}
+                }
+
+                if (!gameOnAuto)
+                {
+                    Plugin.Log.LogInfo("[Bot] ⚔️ Auto-Trigger: Re-enabling Auto Attack (Native State was OFF)");
+                    ToggleAutoAttack(true);
+                    _lastAutoAttackTriggerTime = Time.time;
+                }
+                else {
+                    _autoAttackEnabled = true; // Sync local flag
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[Bot] EnsureAutoAttack error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Global check: Có bất kỳ dialog quan trọng nào đang mở không?
+        /// Bao gồm: NPC Interact, Story Panel, Dialog Panel...
+        /// </summary>
+        private bool IsDialogueOpen()
+        {
+            try
+            {
+                // 1. NpcInteractPanel(Clone) - Common NPC options
+                var npcPanel = GameObject.Find("NpcInteractPanel(Clone)");
+                if (npcPanel != null && npcPanel.activeInHierarchy) return true;
+
+                // 2. DialogPanel (Generic)
+                var dialogPanel = GameObject.Find("DialogPanel");
+                if (dialogPanel != null && dialogPanel.activeInHierarchy) return true;
+
+                // 3. StoryPanel (Quest story)
+                var storyPanel = GameObject.Find("StoryPanel");
+                if (storyPanel != null && storyPanel.activeInHierarchy) return true;
+
+                // 4. Dialogue (Common NPC dialogue panel)
+                var dialog = GameObject.Find("Dialogue");
+                if (dialog != null && dialog.activeInHierarchy) return true;
+
+                // 5. DialogueMessageHolder
+                var holder = GameObject.Find("DialogueMessageHolder");
+                if (holder != null && holder.activeInHierarchy) return true;
+                
+                // 4. New User Requested Panels
+                if (CheckPanel("DlgNpc")) return true;
+                if (CheckPanel("PanelMenu")) return true;
+                if (CheckPanel("ConfirmBox")) return true;
+
+                // 4. NpcInteractPanel original (sometimes used)
+                var npcPanelOrig = GameObject.Find("NpcInteractPanel");
+                if (npcPanelOrig != null && npcPanelOrig.activeInHierarchy) return true;
+
+                return false;
+            }
+            catch { return false; }
+        }
+
+        private bool CheckPanel(string name)
+        {
+             var obj = GameObject.Find(name);
+             return obj != null && obj.activeInHierarchy;
+        }
+
+        /// <summary>
+        /// Tự động xử lý hội thoại: Chọn option đầu tiên hoặc Confirm
+        /// </summary>
+        private void HandleDialogue()
+        {
+            try 
+            {
+                 // Logic đơn giản: Tìm tất cả button trong các panel đang mở và click cái đầu tiên
+                 // Ưu tiên các panel quan trọng
+                 
+                  GameObject[] panels = {
+                    GameObject.Find("NpcInteractPanel(Clone)"),
+                    GameObject.Find("DialogPanel"),
+                    GameObject.Find("StoryPanel"),
+                    GameObject.Find("DlgNpc"),
+                    GameObject.Find("ConfirmBox"),
+                    GameObject.Find("PopupPanel"),
+                    GameObject.Find("ChoiceZonePanel") // Added for zone switch observation
+                 };
+
+                 foreach (var p in panels)
+                 {
+                     if (p != null && p.activeInHierarchy)
+                     {
+                         // Strategy 1: Find prioritized buttons (Quest/Complete)
+                         var buttons = p.GetComponentsInChildren<Button>(true);
+                         Button bestBtn = null;
+                         
+                         foreach (var btn in buttons)
+                         {
+                             if (btn == null || !btn.interactable) continue;
+                             
+                             // --- SMART LOOP PREVENTION ---
+                             string btnSig = $"{p.name}/{btn.name}/{btn.transform.GetSiblingIndex()}";
+                             if (_ignoredButtonSignatures.Contains(btnSig)) continue;
+                             // -----------------------------
+
+                             string btnText = "";
+                             var tmp = btn.GetComponentInChildren<TextMeshProUGUI>();
+                             if (tmp != null) btnText = tmp.text ?? "";
+
+                             string l = btnText.ToLower();
+                             // Keywords for quest progression (Vietnamese + English)
+                             if (l.Contains("nhiệm vụ") || l.Contains("hoàn thành") || l.Contains("nhận") || 
+                                 l.Contains("xác nhận") || l.Contains("đồng ý") || l.Contains("tiếp tục") ||
+                                 l.Contains("trả") || l.Contains("giao") || l.Contains("skip") || l.Contains("bỏ qua") ||
+                                 l.Contains("đóng") || l.Contains("close") || l.Contains("ok") ||
+                                 l.Contains("quest") || l.Contains("complete") || l.Contains("accept") || l.Contains("confirm") ||
+                                 l.Contains("thách đấu"))
+                             {
+                                 bestBtn = btn;
+                                 break; // Take the first matching priority button
+                             }
+                         }
+
+                         // Strategy 2: If no priority button, take the first available one (that isn't ignored)
+                         if (bestBtn == null)
+                         {
+                             foreach (var btn in buttons)
+                             {
+                                 if (btn == null || !btn.interactable) continue;
+                                 string btnSig = $"{p.name}/{btn.name}/{btn.transform.GetSiblingIndex()}";
+                                 if (_ignoredButtonSignatures.Contains(btnSig)) continue;
+                                 bestBtn = btn;
+                                 break;
+                             }
+                         }
+
+                         if (bestBtn != null)
+                         {
+                             // Check for loop
+                             string currentSig = $"{p.name}/{bestBtn.name}/{bestBtn.transform.GetSiblingIndex()}";
+                             if (currentSig == _lastClickedButtonSignature)
+                             {
+                                 _clickSpamCount++;
+                                 if (_clickSpamCount > 5) // Threshold: 5 times same button
+                                 {
+                                     Plugin.Log.LogWarning($"[Bot] ⚠️ Detected Loop on button '{bestBtn.name}' ({currentSig}). Ignoring it.");
+                                     _ignoredButtonSignatures.Add(currentSig);
+                                     _clickSpamCount = 0;
+                                     _lastClickedButtonSignature = ""; // Reset to allow switching
+                                     return; // Skip this frame, next frame will pick next button
+                                 }
+                             }
+                             else
+                             {
+                                 _clickSpamCount = 0;
+                                 _lastClickedButtonSignature = currentSig;
+                             }
+
+                             Plugin.Log.LogInfo($"[Bot] 🗣️ HandleDialogue: Clicking '{bestBtn.name}' (Text: {bestBtn.name}) in '{p.name}' [Spam: {_clickSpamCount}]");
+                             _botInvoking = true;
+                             bestBtn.onClick.Invoke();
+                             _botInvoking = false;
+                             _dialogueCooldownTimer = 1.0f; // Cooldown 1s
+                             _lastDialogActionTime = Time.time;
+                             return;
+                         }
+                     }
+                 }
+
+                 // === FALLBACK: If no suitable buttons found or all ignored ===
+                 // If dialog is open but we can't click anything (or ignored everything)
+                 if (Time.time - _lastDialogActionTime > 3.0f)
+                 {
+                     Plugin.Log.LogWarning("[Bot] ⚠️ Stuck in Dialog (No valid buttons). Fallback: Click Quest Panel.");
+                     TriggerAutoPathfind(); // Will try to click quest panel
+                     _lastDialogActionTime = Time.time; // Reset timer to avoid spamming fallback
+                     _ignoredButtonSignatures.Clear(); // Clear ignore list to give them another chance after a "refresh"
+                 }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[Bot] HandleDialogue error: {ex.Message}");
+            }
+        }
+
+        private GameObject FindClosestObject(string partialName)
+        {
+            if (string.IsNullOrEmpty(partialName)) return null;
+            
+            var allObjs = FindObjectsOfType<Transform>();
+            GameObject closest = null;
+            float minDst = 9999f;
+            Vector3 myPos = _lastPlayerPos; // Fixed variable name
+
+            foreach (var t in allObjs)
+            {
+                if (t.gameObject.activeInHierarchy && t.name.IndexOf(partialName, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    // Filter out UI
+                    if (t.gameObject.layer == 5) continue; // 5 = UI usually
+
+                    float d = Vector3.Distance(myPos, t.position);
+                    if (d < minDst)
+                    {
+                        minDst = d;
+                        closest = t.gameObject;
+                    }
+                }
+            }
+            return closest;
         }
 
         /// <summary>
@@ -2391,7 +3588,7 @@ namespace AutoQuestPlugin
                              // Tìm đệ quy
                              foreach (var name in patterns)
                              {
-                                 var child = FindInactiveChild(parent.transform, name); // Helper function
+                                 var child = BotHelper.FindInactiveChild(parent.transform, name); // Helper function
                                  if (child != null && child.gameObject.activeSelf)
                                  {
                                      var btn = child.GetComponent<Button>();
@@ -2431,7 +3628,7 @@ namespace AutoQuestPlugin
             try
             {
                 if (_shortMissionPanel == null)
-                    _shortMissionPanel = FindSingletonByType("ShortMissionPanel");
+                    _shortMissionPanel = BotHelper.FindSingletonByType("ShortMissionPanel");
 
                 if (_shortMissionPanel != null && _shortMissionPanel.gameObject.activeSelf)
                 {
@@ -2453,7 +3650,7 @@ namespace AutoQuestPlugin
             if (_autoMissionManager == null) return;
             try
             {
-                var state = CallMethodReturn<bool>(_autoMissionManager, "get_state");
+                var state = BotHelper.CallMethodReturn<bool>(_autoMissionManager, "get_state");
                 Plugin.Log.LogInfo($"[Bot] Auto Quest: {(state ? "ĐANG CHẠY" : "TẮT")}");
             }
             catch { }
@@ -2477,46 +3674,35 @@ namespace AutoQuestPlugin
         }
 
         /// <summary>
-        /// Lấy tên map hiện tại từ MiniMap/MapName (TextMeshProUGUI) hoặc MapName (TextMeshPro world-space)
+        /// Lấy tên map hiện tại từ MiniMap/MapName (TextMeshProUGUI) hoặc MapGateway
         /// </summary>
         private string GetCurrentMapName()
         {
-            try
+            // 1. Check Hardcoded Dictionary (Fastest & Most Accurate)
+            if (_sceneNameDict.TryGetValue(_currentScene, out string fixedName))
+                return fixedName;
+
+            // 2. MapGateway (TMPro)
+            if (_mapNameObject == null)
             {
-                // Strategy 1: Tìm MapName trong MiniMap (UI text trên minimap)
-                var miniMap = GameObject.Find("MiniMap");
-                if (miniMap != null)
-                {
-                    var mapNameGo = FindInactiveChild(miniMap.transform, "MapName");
-                    if (mapNameGo != null)
-                    {
-                        // Thử TextMeshProUGUI (UI)
-                        var tmpUI = mapNameGo.GetComponent<TextMeshProUGUI>();
-                        if (tmpUI != null && !string.IsNullOrEmpty(tmpUI.text))
-                            return tmpUI.text.Trim();
-
-                        // Thử TextMeshPro (3D)
-                        var tmp3D = mapNameGo.GetComponent<TMPro.TextMeshPro>();
-                        if (tmp3D != null && !string.IsNullOrEmpty(tmp3D.text))
-                            return tmp3D.text.Trim();
-                    }
-                }
-
-                // Strategy 2: Tìm MinimapName (world-space TMPro trên gateway)
-                var allTMP = GameObject.FindObjectsOfType<TMPro.TextMeshPro>();
-                foreach (var tmp in allTMP)
-                {
-                    if (tmp == null || !tmp.gameObject.activeSelf) continue;
-                    if (tmp.gameObject.name == "MinimapName" || tmp.gameObject.name == "MapName")
-                    {
-                        string text = tmp.text;
-                        if (!string.IsNullOrEmpty(text))
-                            return text.Trim();
-                    }
-                }
+                 var mapGateway = GameObject.Find("MapGateway");
+                 if (mapGateway != null)
+                 {
+                     var txt = mapGateway.GetComponentInChildren<TextMeshProUGUI>();
+                     if (txt != null)
+                     {
+                         _mapNameObject = txt.gameObject;
+                         return txt.text.Trim();
+                     }
+                 }
             }
-            catch { }
-            return "";
+            else
+            {
+                var txt = _mapNameObject.GetComponent<TextMeshProUGUI>();
+                if (txt != null) return txt.text.Trim();
+            }
+
+            return _currentScene; // Fallback
         }
 
         /// <summary>
@@ -2526,25 +3712,31 @@ namespace AutoQuestPlugin
         {
             try
             {
-                // Tìm ZoneObject trong MiniMap
-                var miniMap = GameObject.Find("MiniMap");
-                if (miniMap != null)
+                // Strategy 0: MapGateway (Direct field: miniMapText)
+                var mapGatewayGo = GameObject.Find("MapGateway");
+                if (mapGatewayGo != null)
                 {
-                    var zoneGo = FindInactiveChild(miniMap.transform, "ZoneObject");
-                    if (zoneGo != null)
+                    var mapGateway = mapGatewayGo.GetComponent("MapGateway");
+                    if (mapGateway != null)
                     {
-                        // Tìm text component
-                        var tmpUI = zoneGo.GetComponentInChildren<TextMeshProUGUI>(true);
-                        if (tmpUI != null && !string.IsNullOrEmpty(tmpUI.text))
-                            return tmpUI.text.Trim();
-
-                        var tmp3D = zoneGo.GetComponentInChildren<TMPro.TextMeshPro>(true);
-                        if (tmp3D != null && !string.IsNullOrEmpty(tmp3D.text))
-                            return tmp3D.text.Trim();
+                        string zoneName = BotHelper.GetFieldValue<string>(mapGateway.Cast<MonoBehaviour>(), "miniMapText");
+                        if (!string.IsNullOrEmpty(zoneName)) return zoneName.Trim();
                     }
                 }
 
-                // Fallback: tìm scene name
+                // Strategy 1: MiniMap UI Fallback
+                var miniMap = GameObject.Find("MiniMap");
+                if (miniMap != null)
+                {
+                    var zoneGo = BotHelper.FindInactiveChild(miniMap.transform, "ZoneObject");
+                    if (zoneGo != null)
+                    {
+                        var tmpUI = zoneGo.GetComponentInChildren<TextMeshProUGUI>(true);
+                        if (tmpUI != null && !string.IsNullOrEmpty(tmpUI.text))
+                            return tmpUI.text.Trim();
+                    }
+                }
+
                 return _currentScene ?? "";
             }
             catch { }
@@ -2556,62 +3748,134 @@ namespace AutoQuestPlugin
         /// </summary>
         private Vector3 GetPlayerPosition()
         {
+            if (_lastPlayerPos != Vector3.zero) return _lastPlayerPos;
+             // Fallback logic if needed
+            return Vector3.zero;
+        }
+
+        /// <summary>
+        /// Lấy cấp độ nhân vật từ UI TextLevelDisplay
+        /// </summary>
+        private string GetPlayerLevel()
+        {
             try
             {
-                // Tìm MainPlayer
-                var mainCam = Camera.main;
-                if (mainCam != null)
-                    return mainCam.transform.position;
+                // Strategy 1: Reflection (Internal Data)
+                if (_gameManager != null)
+                {
+                    try {
+                        var mainPlayer = _gameManager.GetIl2CppType().GetMethod("MJNLNELHCDK").Invoke(_gameManager, null);
+                        if (mainPlayer != null)
+                        {
+                            var expInfo = mainPlayer.GetIl2CppType().GetMethod("getMainPlayerExpInfo").Invoke(mainPlayer, null);
+                            if (expInfo != null)
+                            {
+                                // MLBEOIBCDHH = Level
+                                var levelField = expInfo.GetIl2CppType().GetField("MLBEOIBCDHH", (Il2CppSystem.Reflection.BindingFlags)36); // Instance=4 | NonPublic=32
+                                if (levelField != null)
+                                {
+                                    int level = levelField.GetValue(expInfo).Unbox<int>();
+                                    if (level > 0) return level.ToString();
+                                }
+                            }
+                        }
+                    } catch {}
+                }
+
+                // Strategy 2: UI Search (Fallback)
+                var levelGo = GameObject.Find("TextLevelDisplay");
+                if (levelGo != null)
+                {
+                    var allTexts = levelGo.GetComponentsInChildren<TMPro.TextMeshProUGUI>(true);
+                    foreach (var t in allTexts)
+                    {
+                        if (t != null && !string.IsNullOrWhiteSpace(t.text))
+                        {
+                            string levelText = t.text.Trim();
+                            if (levelText.Contains("."))
+                                return levelText.Split('.').Last().Trim();
+                            return levelText;
+                        }
+                    }
+                }
             }
             catch { }
-            return Vector3.zero;
+            return "0";
         }
 
         // ======================== AUTO ATTACK ========================
 
         private void ToggleAutoAttack(bool enable)
         {
-            if (_autoAttackBtn == null)
+            try
             {
-                // Try to find AutoAttackButton
-                var go = GameObject.Find("AutoAttackButton");
-                if (go != null)
+                if (_mainGame != null)
                 {
-                    _autoAttackBtn = go.GetComponent<Button>();
-                    if (_autoAttackBtn == null)
-                    {
-                        // Might be on a child
-                        _autoAttackBtn = go.GetComponentInChildren<Button>();
+                    // Use the game's native method for reliable toggling
+                    try {
+                        BotHelper.CallMethod(_mainGame, "setPlayerOnAutoMode", new object[] { enable });
+                    } catch (Exception ex) {
+                        Plugin.Log.LogWarning($"[Bot] Native AutoMode call failed: {ex.Message}");
                     }
                 }
-            }
 
-            if (_autoAttackBtn != null)
-            {
-                try
+                // UI Button Fallback/Sync
+                if (_autoAttackBtn == null)
                 {
-                    // Check current state and toggle if needed
-                    if (enable && !_autoAttackEnabled)
-                    {
-                        _autoAttackBtn.onClick.Invoke();
-                        _autoAttackEnabled = true;
-                        Plugin.Log.LogInfo("[Bot] ✅ Auto Attack: BẬT (clicked AutoAttackButton)");
-                    }
-                    else if (!enable && _autoAttackEnabled)
-                    {
-                        _autoAttackBtn.onClick.Invoke();
-                        _autoAttackEnabled = false;
-                        Plugin.Log.LogInfo("[Bot] ⛔ Auto Attack: TẮT");
-                    }
+                    var go = GameObject.Find("AutoAttackButton");
+                    if (go != null) _autoAttackBtn = go.GetComponent<Button>();
                 }
-                catch (Exception ex)
+
+                if (enable && !_autoAttackEnabled)
                 {
-                    Plugin.Log.LogWarning($"[Bot] Auto Attack error: {ex.Message}");
+                    bool clicked = false;
+                    if (_autoAttackBtn != null) 
+                    {
+                        Plugin.Log.LogInfo("[Bot] ⚔️ Clicking AutoAttackButton UI...");
+                        
+                        // Force active if needed
+                        if (!_autoAttackBtn.gameObject.activeInHierarchy) {
+                            Plugin.Log.LogWarning("[Bot] ⚠️ AutoAttackButton hidden, forcing active...");
+                            _autoAttackBtn.gameObject.SetActive(true);
+                        }
+
+                        _autoAttackBtn.onClick.Invoke();
+                        clicked = true;
+                        
+                        // Fallback: Try SendMessage for custom handlers (OnPointerClick)
+                        _autoAttackBtn.SendMessage("OnPointerClick", new PointerEventData(EventSystem.current), SendMessageOptions.DontRequireReceiver);
+                    }
+                    else 
+                    {
+                        // Last ditch effort: Find it continuously if null
+                        var go = GameObject.Find("AutoAttackButton");
+                        if (go != null) {
+                             go.SendMessage("OnPointerClick", new PointerEventData(EventSystem.current), SendMessageOptions.DontRequireReceiver);
+                             Plugin.Log.LogInfo("[Bot] ⚔️ Clicked AutoAttackButton via GameObject.Find fallback.");
+                             clicked = true;
+                        }
+                    }
+
+                    if (clicked) Plugin.Log.LogInfo("[Bot] ✅ Auto Attack: BẬT (UI Clicked)");
+                    else Plugin.Log.LogWarning("[Bot] ⚠️ Auto Attack: BẬT (UI Not Found)");
+                    
+                    _autoAttackEnabled = true;
+                }
+                else if (!enable && _autoAttackEnabled)
+                {
+                    if (_autoAttackBtn != null) 
+                    {
+                        Plugin.Log.LogInfo("[Bot] ⛔ Clicking AutoAttackButton UI to Disable...");
+                         _autoAttackBtn.onClick.Invoke();
+                         _autoAttackBtn.SendMessage("OnPointerClick", new PointerEventData(EventSystem.current), SendMessageOptions.DontRequireReceiver);
+                    }
+                    _autoAttackEnabled = false;
+                    Plugin.Log.LogInfo("[Bot] ⛔ Auto Attack: TẮT");
                 }
             }
-            else
+            catch (Exception ex)
             {
-                Plugin.Log.LogWarning("[Bot] ⚠️ AutoAttackButton chưa tìm thấy");
+                Plugin.Log.LogWarning($"[Bot] Auto Attack error: {ex.Message}");
             }
         }
 
@@ -2655,11 +3919,14 @@ namespace AutoQuestPlugin
 
         // ======================== AUTO CLICK NPC DIALOG ========================
 
+        private int _noNpcButtonCycles = 0; // Track consecutive cycles with no buttons found
+
         /// <summary>
         /// Tự động click qua NPC dialog:
         /// 1. NextPlace — tiếp tục hội thoại NPC
         /// 2. InteractPanelButton — nhận nhiệm vụ / hoàn thành quest
         /// 3. Các nút popup khác (OK, Đồng ý, Xác nhận)
+        /// Fallback: Nếu không thấy nút, click ra ngoài (Backdrop) hoặc đóng panel để refresh
         /// </summary>
         private void TryClickNpcDialog()
         {
@@ -2669,24 +3936,61 @@ namespace AutoQuestPlugin
                 var npcPanel = GameObject.Find("NpcInteractPanel(Clone)");
                 if (npcPanel != null && npcPanel.activeSelf && npcPanel.activeInHierarchy)
                 {
-                    // Log all children for debugging
-                    string childNames = "";
-                    for (int ci = 0; ci < npcPanel.transform.childCount; ci++)
-                    {
-                        var c = npcPanel.transform.GetChild(ci);
-                        if (c != null) childNames += c.gameObject.name + (c.gameObject.activeSelf ? "(ON)" : "(OFF)") + ", ";
-                    }
-                    Plugin.Log.LogInfo($"[Bot] 🔍 NpcInteractPanel found! Children: [{childNames}]");
+                    // === Capture Current Dialog Text for anti-loop ===
+                    string currentDialogText = "";
+                    try {
+                        var texts = npcPanel.GetComponentsInChildren<TextMeshProUGUI>(true);
+                        foreach(var t in texts) {
+                            if (t.gameObject.name == "Text" || t.gameObject.name == "Content" || t.gameObject.name == "Desc") {
+                                if (!string.IsNullOrEmpty(t.text)) {
+                                    currentDialogText = t.text.Trim();
+                                    break;
+                                }
+                            }
+                        }
+                    } catch {}
 
-                    // === Ưu tiên 1: Tìm InteractButtonHolder → click nút quest (Nhiệm vụ, etc.) ===
-                    // PHẢI check trước NextPlace vì NextPlace luôn active khi dialog mở
-                    // === BUG FIX v41: Tìm tất cả button trong panel (kể cả nested) ===
-                    // Không phụ thuộc vào InteractButtonHolder nữa
+                    // Detect loop: same text + same panel
+                    if (currentDialogText == _lastNpcDialogText && _lastNpcDialogText != "") {
+                        // Text didn't change since last cycle
+                        // Wait a bit or increment stuck counter
+                    } else {
+                        // Text changed, reset stuck counter
+                        _npcDialogStuckCounter = 0;
+                    }
+                    _lastNpcDialogText = currentDialogText;
+
+                    // === BUG FIX v43: Tìm tất cả button trong panel (kể cả nested) ===
                     var allButtons = npcPanel.GetComponentsInChildren<Button>(true);
+
+                    // === NEW: Capture NPC Name ===
+                    if (string.IsNullOrEmpty(_lastNpcName) || _noNpcButtonCycles == 0)
+                    {
+                         try {
+                            var texts = npcPanel.GetComponentsInChildren<TextMeshProUGUI>(true);
+                            foreach(var t in texts)
+                            {
+                                if (t.gameObject.name == "Name" || t.gameObject.name == "Title" || t.gameObject.name == "NpcName")
+                                {
+                                    if (!string.IsNullOrEmpty(t.text))
+                                    {
+                                        _lastNpcName = t.text;
+                                        Plugin.Log.LogInfo($"[Bot] 🗣️ NPC Found: {_lastNpcName}"); 
+                                        break;
+                                    }
+                                }
+                            }
+                         } catch {}
+                    }
                     
                     Button questBtn = null;
                     Button talkBtn = null; // NextPlace, Nói chuyện
                     Button anyBtn = null;
+                    Button priorityBtn = null; // From DB Sequence
+                    Button iconBtn = null; // NEW: Priority for buttons with ! or ? icons
+
+                    // Check Smart Dialog Sequence first
+                    string preferredBtnText = (_currentQuestDialogSequence.Count > 0) ? _currentQuestDialogSequence[0] : "";
 
                     foreach (var btn in allButtons)
                     {
@@ -2695,33 +3999,50 @@ namespace AutoQuestPlugin
                         string btnName = btn.gameObject.name ?? "";
                         string btnText = "";
                         try {
-                            var tmp = btn.GetComponentInChildren<TextMeshProUGUI>();
-                            if (tmp != null) btnText = tmp.text ?? "";
-                            else {
-                                var legacyText = btn.GetComponentInChildren<UnityEngine.UI.Text>();
-                                if (legacyText != null) btnText = legacyText.text ?? "";
-                            }
+                            btnText = BotHelper.btnTextFromButton(btn);
                         } catch {}
 
-                        // Debug log - ENABLED for v42 debugging
-                        Plugin.Log.LogInfo($"[Bot] 🔍 NPC Button: '{btnName}' | Text: '{btnText}' | Path: {GetPath(btn.transform)}");
+                        // Anti-loop: skip if we've clicked this button too many times on the same text
+                        if (_npcDialogStuckCounter >= MAX_NPC_DIALOG_STRICT_REPEATS && btnName == _lastClickedNpcButton && btnName != "NextPlace") {
+                            continue; 
+                        }
 
                         // Skip close buttons
                         if (btnName.Contains("Close") || btnName.Contains("Exit") || btnName == "BtnClose") continue;
 
+                        // 0. Icon Priority (!) or (?)
+                        try {
+                            var images = btn.GetComponentsInChildren<UnityEngine.UI.Image>(true);
+                            foreach(var img in images) {
+                                if (img.sprite != null) {
+                                    string spriteName = img.sprite.name.ToLower();
+                                    if (spriteName.Contains("icon_quest") || spriteName.Contains("!") || spriteName.Contains("task") || spriteName.Contains("quest")) {
+                                        iconBtn = btn;
+                                        break;
+                                    }
+                                }
+                            }
+                        } catch {}
+
+                        // 0. Smart Dialog Priority (from DB)
+                        if (!string.IsNullOrEmpty(preferredBtnText) && btnText.Contains(preferredBtnText))
+                        {
+                            priorityBtn = btn;
+                            break; // Immediate priority!
+                        }
+
                         // 1. Quest keywords (PRIORITY)
                         if (btnText.Contains("Nhiệm vụ") || btnText.Contains("Nhận") || 
                             btnText.Contains("Hoàn thành") || btnText.Contains("Trả") ||
-                            btnText.Contains("Đồng ý") || btnText.Contains("Quest"))
+                            btnText.Contains("Đồng ý") || btnText.Contains("Quest") ||
+                            btnText.Contains("Xác nhận") || btnText.Contains("OK"))
                         {
                             questBtn = btn;
-                            break; // Found priority
                         }
 
-                        // 1b. Name-based priority (v42 fix)
+                        // 1b. Name-based priority
                         if (btnName == "InteractPanelButton") 
                         {
-                            // Nếu chưa tìm thấy quest btn qua text, dùng cái này làm ứng viên số 1
                             if (questBtn == null) questBtn = btn;
                         }
 
@@ -2735,46 +4056,85 @@ namespace AutoQuestPlugin
                         if (anyBtn == null) anyBtn = btn;
                     }
 
-                    // Execute click with priority - Set _botInvoking flag to suppress hook logging
-                    if (questBtn != null)
-                    {
-                        Plugin.Log.LogInfo($"[Bot] 📜 Click Quest Button (Priority): '{questBtn.gameObject.name}'");
-                        LogStateAction($"CLICK NPC_QUEST_BTN: {questBtn.gameObject.name}");
-                        _botInvoking = true;
-                        questBtn.onClick.Invoke();
-                        _botInvoking = false;
-                        return;
-                    }
-                    if (talkBtn != null)
-                    {
-                        Plugin.Log.LogInfo($"[Bot] 💬 Click Talk/Next: '{talkBtn.gameObject.name}'");
-                        LogStateAction($"CLICK NPC_TALK_BTN: {talkBtn.gameObject.name}");
-                        _botInvoking = true;
-                        talkBtn.onClick.Invoke();
-                        _botInvoking = false;
-                        return;
-                    }
-                    if (anyBtn != null)
-                    {
-                        Plugin.Log.LogInfo($"[Bot] 👆 Click Any Button (fallback): '{anyBtn.gameObject.name}'");
-                        LogStateAction($"CLICK NPC_ANY_BTN: {anyBtn.gameObject.name}");
-                        _botInvoking = true;
-                        anyBtn.onClick.Invoke();
-                        _botInvoking = false;
-                        return;
+                    // Loop recovery: if stuck, and we are about to click the same button, try to find another or close
+                    if (_npcDialogStuckCounter >= MAX_NPC_DIALOG_STRICT_REPEATS) {
+                        Plugin.Log.LogWarning($"[Bot] 🔄 NPC Dialog is STUCK on '{_lastClickedNpcButton}'. Trying to force exit or switch.");
+                        // Try any other button that isn't the stuck one
+                        if (questBtn != null && questBtn.gameObject.name != _lastClickedNpcButton) priorityBtn = questBtn;
+                        else if (talkBtn != null && talkBtn.gameObject.name != _lastClickedNpcButton) priorityBtn = talkBtn;
+                        else if (anyBtn != null && anyBtn.gameObject.name != _lastClickedNpcButton) priorityBtn = anyBtn;
+                        else {
+                            // Find close button as last resort
+                            foreach (var btn in allButtons) {
+                                if (btn.gameObject.name.Contains("Close") || btn.gameObject.name.Contains("Exit") || btn.gameObject.name == "BtnClose") {
+                                    priorityBtn = btn;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (priorityBtn == null) {
+                            Plugin.Log.LogInfo("[Bot] ⛔ Can't break loop. Closing panel manually.");
+                            npcPanel.SetActive(false);
+                            _npcDialogStuckCounter = 0;
+                            return;
+                        }
                     }
 
+                    // Execution click with priority
+                    var targetBtn = iconBtn ?? priorityBtn ?? questBtn ?? talkBtn ?? anyBtn;
+                    
+                    if (targetBtn != null)
+                    {
+                        _noNpcButtonCycles = 0;
+                        string btnName = targetBtn.gameObject.name;
+                        
+                        // Increment stuck counter if same button
+                        if (btnName == _lastClickedNpcButton && btnName != "NextPlace") {
+                            _npcDialogStuckCounter++;
+                        } else {
+                            _npcDialogStuckCounter = 0;
+                            _lastClickedNpcButton = btnName;
+                        }
+
+                        string btnTextLog = BotHelper.btnTextFromButton(targetBtn);
+                        Plugin.Log.LogInfo($"[Bot] {(iconBtn != null ? "❗ Icon" : "🧠 Smart")} Dialog Click: '{btnName}' ({btnTextLog}) [Stuck:{_npcDialogStuckCounter}]");
+                        LogStateAction($"CLICK NPC_BTN: {btnName}");
+                        _botInvoking = true;
+                        targetBtn.onClick.Invoke();
+                        _botInvoking = false;
+                        
+                        // Remove used button from sequence (FIFO) if it was the sequence button
+                        if (targetBtn == priorityBtn && _currentQuestDialogSequence.Count > 0) 
+                            _currentQuestDialogSequence.RemoveAt(0);
+                    }
+                    else
+                    {
+                        _noNpcButtonCycles++;
+                        // Fallback: If no buttons found after multiple cycles, try clicking backdrop or closing
+                        if (_noNpcButtonCycles > 10)
+                        {
+                            Plugin.Log.LogInfo("[Bot] ⛔ No dialog buttons found for too long. Forcing close.");
+                            npcPanel.SetActive(false);
+                            _noNpcButtonCycles = 0;
+                        }
+                    }
                 }
-
-                // === 2. PopupCanvas scanning REMOVED ===
-                // Trước đây bot scan toàn bộ PopupCanvas → click nhầm vào menu người chơi
-                // Giờ chỉ xử lý NpcInteractPanel ở trên, popup dismiss do MODULE 4 xử lý
+                else
+                {
+                    _noNpcButtonCycles = 0; // Reset khi không có panel
+                    _npcDialogStuckCounter = 0;
+                    _lastClickedNpcButton = "";
+                    _lastNpcDialogText = "";
+                }
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogWarning($"[Bot] NPC Dialog click error: {ex.Message}");
+                Plugin.Log.LogWarning($"[Bot] NPC Dialog error: {ex.Message}");
             }
         }
+
+
 
         /// <summary>
         /// Tìm Button con theo tên trong GameObject
@@ -2808,7 +4168,7 @@ namespace AutoQuestPlugin
                 // Find ShortMissionPanel
                 if (_shortMissionPanel == null)
                 {
-                    _shortMissionPanel = FindSingletonByType("ShortMissionPanel");
+                    _shortMissionPanel = BotHelper.FindSingletonByType("ShortMissionPanel");
                 }
 
                 if (_shortMissionPanel != null && _shortMissionPanel.gameObject.activeSelf)
@@ -3092,8 +4452,20 @@ namespace AutoQuestPlugin
                         // Skip SafetyArea (luôn active, không phải popup)
                         if (childName == "SafetyArea") continue;
 
+                        // Whitelist: Skip panels that user might want to interact with
+                        string[] whitelist = { "Menu", "Shop", "Inventory", "Store", "Bag", "Equipment", "ItemDetail", "Skill", "Pet", "Friend", "FeatureMenu", "QuickFeatureMenu" };
+                        bool isWhitelisted = false;
+                        foreach (var w in whitelist)
+                        {
+                            if (childName.IndexOf(w, StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                isWhitelisted = true;
+                                break;
+                            }
+                        }
+                        if (isWhitelisted) continue;
+
                         // Check nếu có PopupBehaviour → đây là popup cần dismiss
-                        var popupComp = child.GetComponent<Component>();
                         bool hasPopupBehaviour = false;
                         var childComps = child.gameObject.GetComponents<Component>();
                         foreach (var cc in childComps)
@@ -3224,7 +4596,7 @@ namespace AutoQuestPlugin
             try
             {
                 if (_guideManager == null)
-                    _guideManager = FindSingletonByType("GuideManager");
+                    _guideManager = BotHelper.FindSingletonByType("GuideManager");
 
                 if (_guideManager == null || !_guideManager.gameObject.activeSelf) return;
 
@@ -3232,7 +4604,7 @@ namespace AutoQuestPlugin
                 bool hasGuide = false;
                 try
                 {
-                    hasGuide = CallMethodReturn<bool>(_guideManager, "hasGuide");
+                    hasGuide = BotHelper.CallMethodReturn<bool>(_guideManager, "hasGuide");
                 }
                 catch { return; } // Không có method → skip
 
@@ -3240,7 +4612,7 @@ namespace AutoQuestPlugin
                 {
                     try
                     {
-                        CallMethodNoParam(_guideManager, "onGuideStop");
+                        BotHelper.CallMethodNoParam(_guideManager, "onGuideStop");
                         Plugin.Log.LogInfo("[Bot] 📖 Guide/Tutorial dismissed via GuideManager.onGuideStop()");
                     }
                     catch (Exception ex)
@@ -3269,18 +4641,17 @@ namespace AutoQuestPlugin
                 if (_reviveCooldown > 0) return;
 
                 if (_autoAttackBlackBoard == null)
-                    _autoAttackBlackBoard = FindSingletonByType("AutoAttackBlackBoardComponent");
+                    _autoAttackBlackBoard = BotHelper.FindSingletonByType("AutoAttackBlackBoardComponent");
             // Fallback: search via hierarchy since AutoAttackBlackBoard is active=False
             if (_autoAttackBlackBoard == null)
             {
                 var serviceGo = GameObject.Find("Service");
                 if (serviceGo != null)
                 {
-                    var found = FindInactiveChild(serviceGo.transform, "AutoAttackBlackBoard");
+                    var found = BotHelper.FindInactiveChild(serviceGo.transform, "AutoAttackBlackBoard");
                     if (found != null)
                     {
-                        var comps = found.GetComponentsInChildren<MonoBehaviour>(true);
-                        foreach (var c in comps)
+                        foreach (var c in found.GetComponentsInChildren<MonoBehaviour>(true))
                         {
                             if (c.GetIl2CppType().Name == "AutoAttackBlackBoardComponent")
                             {
@@ -3298,7 +4669,7 @@ namespace AutoQuestPlugin
                 bool needRevive = false;
                 try
                 {
-                    needRevive = CallMethodReturn<bool>(_autoAttackBlackBoard, "needToRevive");
+                    needRevive = BotHelper.CallMethodReturn<bool>(_autoAttackBlackBoard, "needToRevive");
                 }
                 catch { return; }
 
@@ -3323,6 +4694,8 @@ namespace AutoQuestPlugin
                         pbtn.onClick.Invoke();
                         Plugin.Log.LogInfo($"[Bot] âœ¨ Revive: Clicked '{pbtnName}' on PopupCanvas");
                         _reviveCooldown = 10f;
+                        _farmState = FarmState.IDLE;
+                        _farmStuckTimer = 0f;
                         return;
                     }
                 }
@@ -3345,6 +4718,8 @@ namespace AutoQuestPlugin
                                 btn.onClick.Invoke();
                                 Plugin.Log.LogInfo($"[Bot] ✨ Revive: Clicked '{name}'");
                                 _reviveCooldown = 10f; // Cooldown 10s tránh spam
+                                _farmState = FarmState.IDLE;
+                                _farmStuckTimer = 0f;
                                 return;
                             }
                         }
@@ -3366,6 +4741,8 @@ namespace AutoQuestPlugin
                                 btn.onClick.Invoke();
                                 Plugin.Log.LogInfo($"[Bot] ✨ Revive: Clicked '{btn.gameObject.name}' (text='{text}')");
                                 _reviveCooldown = 10f;
+                                _farmState = FarmState.IDLE;
+                                _farmStuckTimer = 0f;
                                 return;
                             }
                         }
@@ -3490,6 +4867,46 @@ namespace AutoQuestPlugin
                    lower.Contains("boss đã") || lower.Contains("xuất hiện tại");
         }
 
+        // ======================== ZONE DETECTION ========================
+        
+        /// <summary>
+        /// Check if we are in a PvE or PvP zone based on UI text
+        /// </summary>
+        private void UpdateZoneStatus()
+        {
+            try 
+            {
+                 bool isCombat = false;
+                 
+                 string mapName = GetCurrentMapName().ToLower();
+                 string zoneName = GetCurrentZoneName().ToLower();
+
+                 if (zoneName.Contains("pve") || zoneName.Contains("pvp") || zoneName.Contains("chiến") || zoneName.Contains("dã ngoại")) 
+                     isCombat = true;
+                 
+                 if (!isCombat && (mapName.Contains("oloong") || mapName.Contains("phó bản") || mapName.Contains("boss") || mapName.Contains("đảo")))
+                     isCombat = true;
+
+                 // Deep scan fallback removed for efficiency since we have direct data
+                 _inCombatZone = isCombat;
+             }
+             catch { }
+        }
+
+        private string GetTextFromObject(GameObject go)
+        {
+            if (go == null) return "";
+            var tmp = go.GetComponent<TextMeshProUGUI>();
+            if (tmp != null) return tmp.text;
+            var t = go.GetComponent<Text>();
+            if (t != null) return t.text;
+            
+            // Search children
+            tmp = go.GetComponentInChildren<TextMeshProUGUI>();
+            if (tmp != null) return tmp.text;
+            return "";
+        }
+
         /// <summary>
         /// Process and log a boss notification, extract map info if possible
         /// </summary>
@@ -3510,7 +4927,7 @@ namespace AutoQuestPlugin
             {
                 extractedMap = text.Substring(taiIdx + 4).Trim();
                 // Clean up: remove trailing punctuation, HTML tags
-                extractedMap = CleanTextTags(extractedMap);
+                extractedMap = BotHelper.CleanTextTags(extractedMap);
             }
             else
             {
@@ -3518,7 +4935,7 @@ namespace AutoQuestPlugin
                 if (atIdx >= 0)
                 {
                     extractedMap = text.Substring(atIdx + 4).Trim();
-                    extractedMap = CleanTextTags(extractedMap);
+                    extractedMap = BotHelper.CleanTextTags(extractedMap);
                 }
             }
 
@@ -3526,7 +4943,7 @@ namespace AutoQuestPlugin
                 _lastBossMap = extractedMap;
 
             // === LOG BOSS NOTIFICATION ===
-            string cleanText = CleanTextTags(text);
+            string cleanText = BotHelper.CleanTextTags(text);
             Plugin.Log.LogWarning($"[Bot] 🐉 BOSS: {cleanText}");
             if (!string.IsNullOrEmpty(extractedMap))
                 Plugin.Log.LogWarning($"[Bot] 🗺️ BOSS MAP: {extractedMap}");
@@ -3551,35 +4968,7 @@ namespace AutoQuestPlugin
         /// <summary>
         /// Clean HTML/rich text tags from string
         /// </summary>
-        private string CleanTextTags(string text)
-        {
-            if (string.IsNullOrEmpty(text)) return "";
-            string result = text;
-            // Remove <color=#...>...</color> tags
-            while (result.Contains("<color"))
-            {
-                int tagStart = result.IndexOf("<color");
-                int tagEnd = result.IndexOf('>', tagStart);
-                if (tagEnd > tagStart)
-                    result = result.Substring(0, tagStart) + result.Substring(tagEnd + 1);
-                else break;
-            }
-            result = result.Replace("</color>", "");
-            // Remove other common tags
-            result = result.Replace("<b>", "").Replace("</b>", "");
-            result = result.Replace("<i>", "").Replace("</i>", "");
-            result = result.Replace("<size=", "").Replace("</size>", "");
-            // Remove remaining tags
-            while (result.Contains("<") && result.Contains(">"))
-            {
-                int s = result.IndexOf('<');
-                int e = result.IndexOf('>', s);
-                if (e > s && e - s < 50) // Only short tags
-                    result = result.Substring(0, s) + result.Substring(e + 1);
-                else break;
-            }
-            return result.Trim();
-        }
+
 
         // ======================== COMMAND CONSOLE (Launcher ↔ Bot) ========================
 
@@ -3658,6 +5047,61 @@ namespace AutoQuestPlugin
                                    $"Pos: ({pos2.x:F0}, {pos2.y:F0}, {pos2.z:F0})";
                         break;
 
+                    case string s when s.StartsWith("teleport"):
+                         // Format: teleport MapName ZoneName
+                         // Note: Arguments might contain spaces, so likely split by known separators or fixed index?
+                         // Launcher sends: teleport {Map} {Zone}
+                         // Since Map can have spaces (e.g. "Ngôi Làng Oloong"), we need robust parsing.
+                         // But for now, let's assume space separation and Map is 1 word? No, "Ngôi Làng Oloong" is 3 words.
+                         // Launcher should probably quote it or use a delimiter?
+                         // Let's assume the LAST argument is Zone (usually 1 word like "Zone 1") and the rest is Map.
+                         
+                         string[] parts = s.Substring(9).Trim().Split(' ');
+                         if (parts.Length >= 2)
+                         {
+                             // Simple heuristic: Last part is Zone, rest is Map
+                             // Example: "Ngôi Làng Oloong Zone 1" -> Map="Ngôi Làng Oloong", Zone="Zone 1" (Wait, Zone 1 is 2 words)
+                             // Better: Launcher sends "teleport <Map>|<Zone>" using a pipe?
+                             // Or we just try to match.
+                             // Let's rely on arguments being passed clearly.
+                             // If we split by Space, it's ambiguous.
+                             // Let's assume the user/launcher uses a pipe '|' separator if they implemented it that way.
+                             // But my plan said "teleport <map> <zone>".
+                             // Let's update Launcher to send "teleport <Map>|<Zone>" to be safe.
+                             // Here, I will support both space (if simple) and pipe.
+                             
+                             string args = s.Substring(8).Trim();
+                             string tMap = "", tZone = "";
+                             
+                             if (args.Contains("|"))
+                             {
+                                 string[] p = args.Split('|');
+                                 tMap = p[0].Trim();
+                                 if (p.Length > 1) tZone = p[1].Trim();
+                             }
+                             else
+                             {
+                                 // Fallback: If no pipe, assume arguments are spaced.
+                                 tMap = args;
+                             }
+                             
+                             DoTeleport(tMap, tZone);
+                             response = $"[{time}] 🚀 Teleporting to [{tMap}] - [{tZone}]...";
+                         }
+                         else
+                         {
+                             response = $"[{time}] ⚠️ Invalid teleport syntax. Use: teleport MapName|ZoneName";
+                         }
+                         break;
+
+                    case "login":
+                        Plugin.Log.LogInfo("[Bot] 📩 Login command received from Launcher!");
+                        _autoLoginDone = false;
+                        _charSelectDone = false;
+                        HandleAutoLogin();
+                        response = $"[{time}] 🔑 Login triggered for '{_loginUsername}' on scene '{_currentScene}'";
+                        break;
+
                     case "boss":
                         if (string.IsNullOrEmpty(_lastBossNotification))
                             response = $"[{time}] 🐉 Chưa phát hiện boss nào.";
@@ -3722,6 +5166,172 @@ namespace AutoQuestPlugin
             }
         }
 
+        // ======================== TELEPORT STATE MACHINE (UI AUTOMATION) ========================
+        private int _teleportState = 0; // 0=Idle, 1=OpenZone, 2=SelectZone, 3=OpenMap, 4=SelectMap
+        private string _targetMapName = "";
+        private string _targetZoneName = "";
+        private float _teleportTimer = 0f;
+        private float _teleportTimeout = 0f;
+
+        private void UpdateTeleport()
+        {
+            if (_teleportState == 0) return;
+
+            _teleportTimer += Time.deltaTime;
+            _teleportTimeout += Time.deltaTime;
+
+            if (_teleportTimeout > 20f) // 20s timeout
+            {
+                Plugin.Log.LogWarning("[Bot] ⚠️ Teleport timed out! Resetting.");
+                _teleportState = 0;
+                return;
+            }
+
+            switch (_teleportState)
+            {
+                case 1: // OPEN ZONE PANEL
+                    if (_teleportTimer > 1.0f)
+                    {
+                        var zoneBtn = GameObject.Find("HUDCanvas/SafetyUI/MiniMap/ZoneObject");
+                        if (zoneBtn != null)
+                        {
+                            ClickButton(zoneBtn);
+                            Plugin.Log.LogInfo("[Bot] 🖱️ Clicked ZoneObject to open panel.");
+                            _teleportState = 2; // Move to select
+                            _teleportTimer = 0f;
+                        }
+                        else
+                        {
+                            Plugin.Log.LogWarning("[Bot] ❌ ZoneObject not found!");
+                            _teleportState = 0;
+                        }
+                    }
+                    break;
+
+                case 2: // SELECT ZONE
+                    if (_teleportTimer > 1.5f) // Wait for panel to open
+                    {
+                        if (ClickTextButton(_targetZoneName, "ZonePanel")) 
+                        {
+                             Plugin.Log.LogInfo($"[Bot] ✅ Clicked Zone: {_targetZoneName}");
+                             _teleportState = 0;
+                             
+                             if (!string.IsNullOrEmpty(_targetMapName) && _targetMapName != GetCurrentMapName())
+                             {
+                                 _teleportState = 3; 
+                                 _teleportTimer = 0f;
+                             }
+                        }
+                        else if (_teleportTimer > 5f)
+                        {
+                            Plugin.Log.LogWarning($"[Bot] ⚠️ Could not find Zone [{_targetZoneName}] in UI.");
+                            _teleportState = 0;
+                        }
+                    }
+                    break;
+
+                case 3: // OPEN MAP PANEL
+                    if (_teleportTimer > 1.0f)
+                    {
+                        var mapBtn = GameObject.Find("HUDCanvas/SafetyUI/MiniMap/MapName");
+                        if (mapBtn != null)
+                        {
+                            ClickButton(mapBtn);
+                            Plugin.Log.LogInfo("[Bot] 🖱️ Clicked MapName to open World Map.");
+                            _teleportState = 4;
+                            _teleportTimer = 0f;
+                        }
+                        else
+                        {
+                            Plugin.Log.LogWarning("[Bot] ❌ MapName button not found!");
+                            _teleportState = 0;
+                        }
+                    }
+                    break;
+
+                case 4: // SELECT MAP
+                    if (_teleportTimer > 2.0f)
+                    {
+                        if (ClickTextButton(_targetMapName, "MapPanel"))
+                        {
+                            Plugin.Log.LogInfo($"[Bot] ✅ Clicked Map: {_targetMapName}");
+                             _teleportState = 5; // Check for confirm
+                             _teleportTimer = 0f;
+                        }
+                        else if (_teleportTimer > 5f)
+                        {
+                            Plugin.Log.LogWarning($"[Bot] ⚠️ Could not find Map [{_targetMapName}] in UI.");
+                            _teleportState = 0;
+                        }
+                    }
+                    break;
+                    
+                case 5: // CONFIRM MAP (If needed)
+                    if (_teleportTimer > 1.0f)
+                    {
+                        _teleportState = 0;
+                    }
+                    break;
+            }
+        }
+
+        private bool ClickTextButton(string textToFind, string debugContext)
+        {
+            if (string.IsNullOrEmpty(textToFind)) return false;
+            var allTxt = GameObject.FindObjectsOfType<TextMeshProUGUI>();
+            foreach (var txt in allTxt)
+            {
+                if (txt == null) continue;
+                if (txt.gameObject.activeInHierarchy && txt.text.Contains(textToFind))
+                {
+                    var btn = txt.GetComponentInParent<Button>();
+                    if (btn != null)
+                    {
+                        btn.onClick.Invoke();
+                        return true;
+                    }
+                    txt.SendMessageUpwards("OnPointerClick", new PointerEventData(EventSystem.current), SendMessageOptions.DontRequireReceiver);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void ClickButton(GameObject go)
+        {
+            if (go == null) return;
+            var btn = go.GetComponent<Button>();
+            if (btn != null) btn.onClick.Invoke();
+            else go.SendMessage("OnPointerClick", new PointerEventData(EventSystem.current), SendMessageOptions.DontRequireReceiver);
+        }
+
+        private void DoTeleport(string map, string zone)
+        {
+            Plugin.Log.LogInfo($"[Bot] 🚀 Init Teleport UI: Map='{map}', Zone='{zone}'");
+            _targetMapName = map;
+            _targetZoneName = zone;
+            _teleportTimeout = 0f;
+            _teleportTimer = 0f;
+
+            string currentMap = GetCurrentMapName();
+            Plugin.Log.LogInfo($"[Bot] Teleport Check: Current='{currentMap}' vs Target='{map}'");
+
+            if (!string.IsNullOrEmpty(map) && map != currentMap)
+            {
+                Plugin.Log.LogInfo("[Bot] 🗺️ Different Map -> Trigger Map Teleport Mode");
+                _teleportState = 3;
+            }
+            else if (!string.IsNullOrEmpty(zone) && zone != GetCurrentZoneName())
+            {
+                Plugin.Log.LogInfo("[Bot] 📍 Same Map, Different Zone -> Trigger Zone Change Mode");
+                _teleportState = 1; 
+            }
+            else
+            {
+                Plugin.Log.LogInfo("[Bot] ✅ Already at target location (Map & Zone match).");
+            }
+        }
+
         // ======================== FIND MANAGERS ========================
 
         private void FindManagers()
@@ -3730,54 +5340,68 @@ namespace AutoQuestPlugin
             try
             {
                 // === Managers ===
-                _autoMissionManager = FindSingletonByType("AutoMissionManager");
+                _autoMissionManager = BotHelper.FindSingletonByType("AutoMissionManager");
                 if (_autoMissionManager != null)
                     Plugin.Log.LogInfo("[Bot] ✅ Tìm thấy AutoMissionManager!");
                 else
                     Plugin.Log.LogWarning("[Bot] ❌ Không tìm thấy AutoMissionManager");
 
-                _playerDataManager = FindSingletonByType("PlayerDataManager");
+                _playerDataManager = BotHelper.FindSingletonByType("PlayerDataManager");
                 if (_playerDataManager != null)
                     Plugin.Log.LogInfo("[Bot] ✅ Tìm thấy PlayerDataManager!");
 
-                _gameManager = FindSingletonByType("GameManager");
+                _gameManager = BotHelper.FindSingletonByType("GameManager");
                 if (_gameManager != null)
                     Plugin.Log.LogInfo("[Bot] ✅ Tìm thấy GameManager!");
 
-                _appManager = FindSingletonByType("AppManager");
+                _appManager = BotHelper.FindSingletonByType("AppManager");
                 if (_appManager != null)
                     Plugin.Log.LogInfo("[Bot] ✅ Tìm thấy AppManager!");
 
-                // === UI Buttons ===
-                var autoAtkGO = GameObject.Find("AutoAttackButton");
-                if (autoAtkGO != null)
-                {
-                    _autoAttackBtn = autoAtkGO.GetComponent<Button>();
-                    if (_autoAttackBtn == null)
-                        _autoAttackBtn = autoAtkGO.GetComponentInChildren<Button>();
-                    Plugin.Log.LogInfo($"[Bot] ✅ AutoAttackButton: {(_autoAttackBtn != null ? "found" : "no Button comp")}");
-                }
-                else
-                    Plugin.Log.LogWarning("[Bot] ❌ AutoAttackButton GO not found");
+                _guideManager = BotHelper.FindSingletonByType("GuideManager");
+                _autoAttackBlackBoard = BotHelper.FindSingletonByType("AutoAttackBlackBoardComponent");
 
-                var interactGO = GameObject.Find("InteractButton");
-                if (interactGO != null)
+                // === UI Buttons (Muted if not found) ===
+                var hudCanvas = GameObject.Find("HUDCanvas");
+                if (hudCanvas != null)
                 {
-                    _interactBtn = interactGO.GetComponent<Button>();
-                    if (_interactBtn == null)
-                        _interactBtn = interactGO.GetComponentInChildren<Button>();
-                    Plugin.Log.LogInfo($"[Bot] ✅ InteractButton: {(_interactBtn != null ? "found" : "no Button comp")}");
+                    // AutoAttackButton in SkillLayout - DEEP SEARCH
+                    // First try direct path
+                    Transform skillLayout = hudCanvas.transform.Find("SkillLayout");
+                    if (skillLayout == null) skillLayout = hudCanvas.transform; // Fallback to canvas root search if layout moved
+
+                    var autoAtkGO = BotHelper.FindInactiveChild(skillLayout, "AutoAttackButton");
+                    if (autoAtkGO != null)
+                    {
+                        _autoAttackBtn = autoAtkGO.GetComponent<Button>();
+                        // If no Button component, look for the Custom Component "AutoAttackButton" and see if we can get a Button from it or children
+                        if (_autoAttackBtn == null)
+                            _autoAttackBtn = autoAtkGO.GetComponentInChildren<Button>(true);
+                            
+                        Plugin.Log.LogInfo($"[Bot] ✅ Found AutoAttackButton at {BotHelper.GetPath(autoAtkGO.transform)} (Active: {autoAtkGO.activeInHierarchy})");
+                    }
+                    else
+                    {
+                         Plugin.Log.LogWarning("[Bot] ❌ AutoAttackButton NOT found in SkillLayout!");
+                    }
+
+                    // InteractButton in SkillLayout
+                    var interactGO = BotHelper.FindInactiveChild(skillLayout, "InteractButton");
+                    if (interactGO != null)
+                    {
+                        _interactBtn = interactGO.GetComponent<Button>();
+                        if (_interactBtn == null)
+                            _interactBtn = interactGO.GetComponentInChildren<Button>(true);
+                    }
                 }
-                else
-                    Plugin.Log.LogWarning("[Bot] ❌ InteractButton GO not found");
 
                 // === Quest Panel ===
-                _shortMissionPanel = FindSingletonByType("ShortMissionPanel");
+                _shortMissionPanel = BotHelper.FindSingletonByType("ShortMissionPanel");
                 if (_shortMissionPanel != null)
                     Plugin.Log.LogInfo("[Bot] ✅ Tìm thấy ShortMissionPanel!");
 
                 // === MainGame (trên SceneManager GO) ===
-                _mainGame = FindSingletonByType("MainGame");
+                _mainGame = BotHelper.FindSingletonByType("MainGame");
                 if (_mainGame != null)
                     Plugin.Log.LogInfo("[Bot] ✅ Tìm thấy MainGame!");
                 else
@@ -3794,11 +5418,11 @@ namespace AutoQuestPlugin
                 }
 
                 // === Phase 3 Managers ===
-                _guideManager = FindSingletonByType("GuideManager");
+                _guideManager = BotHelper.FindSingletonByType("GuideManager");
                 if (_guideManager != null)
                     Plugin.Log.LogInfo("[Bot] ✅ Tìm thấy GuideManager!");
 
-                _autoAttackBlackBoard = FindSingletonByType("AutoAttackBlackBoardComponent");
+                _autoAttackBlackBoard = BotHelper.FindSingletonByType("AutoAttackBlackBoardComponent");
                 if (_autoAttackBlackBoard != null)
                     Plugin.Log.LogInfo("[Bot] ✅ Tìm thấy AutoAttackBlackBoardComponent!");
 
@@ -3837,7 +5461,7 @@ namespace AutoQuestPlugin
                         if (mb == null) continue;
                         if (mb.GetIl2CppType().FullName == kvp.Key)
                         {
-                            var hasGI = HasMethod(mb, "gI");
+                            var hasGI = BotHelper.HasMethod(mb, "gI");
                             Plugin.Log.LogInfo($"  [{++idx}] {kvp.Key} on:{mb.gameObject.name} gI={hasGI}");
                             break;
                         }
@@ -3894,130 +5518,8 @@ namespace AutoQuestPlugin
             }
         }
 
-        // ======================== HELPERS ========================
 
-        private MonoBehaviour FindSingletonByType(string typeName)
-        {
-            var allMB = GameObject.FindObjectsOfType<MonoBehaviour>();
-            foreach (var mb in allMB)
-            {
-                if (mb == null) continue;
-                if (mb.GetIl2CppType().Name == typeName)
-                    return mb;
-            }
-            return null;
-        }
 
-        private void CallMethod(MonoBehaviour target, string methodName)
-        {
-            var methods = target.GetIl2CppType().GetMethods();
-            foreach (var m in methods)
-            {
-                if (m.Name == methodName)
-                {
-                    m.Invoke(target, null);
-                    return;
-                }
-            }
-            throw new Exception($"Method '{methodName}' not found on {target.GetIl2CppType().Name}");
-        }
-
-        /// <summary>
-        /// Strictly call a parameterless method — throws if all overloads require params
-        /// </summary>
-        private void CallMethodNoParam(MonoBehaviour target, string methodName)
-        {
-            var methods = target.GetIl2CppType().GetMethods();
-            foreach (var m in methods)
-            {
-                if (m.Name == methodName)
-                {
-                    var parms = m.GetParameters();
-                    if (parms == null || parms.Length == 0)
-                    {
-                        m.Invoke(target, null);
-                        return;
-                    }
-                }
-            }
-            throw new Exception($"No parameterless '{methodName}' on {target.GetIl2CppType().Name}");
-        }
-
-        private T CallMethodReturn<T>(MonoBehaviour target, string methodName)
-        {
-            var methods = target.GetIl2CppType().GetMethods();
-            foreach (var m in methods)
-            {
-                if (m.Name == methodName)
-                {
-                    var result = m.Invoke(target, null);
-                    if (result != null)
-                        return (T)Convert.ChangeType(result.ToString(), typeof(T));
-                    return default(T);
-                }
-            }
-            throw new Exception($"Method '{methodName}' not found");
-        }
-
-        private bool HasMethod(MonoBehaviour target, string methodName)
-        {
-            try
-            {
-                var methods = target.GetIl2CppType().GetMethods();
-                foreach (var m in methods)
-                    if (m.Name == methodName) return true;
-            }
-            catch { }
-            return false;
-        }
-
-        /// <summary>
-        /// Tìm child GameObject theo tên trong hierarchy, kể cả inactive objects.
-        /// GameObject.Find() chỉ tìm được active objects — method này tìm tất cả.
-        /// </summary>
-        private GameObject FindInactiveChild(Transform parent, string name)
-        {
-            if (parent == null) return null;
-            for (int i = 0; i < parent.childCount; i++)
-            {
-                var child = parent.GetChild(i);
-                if (child == null) continue;
-                if (child.gameObject.name == name)
-                    return child.gameObject;
-                // Recursive search
-                var found = FindInactiveChild(child, name);
-                if (found != null) return found;
-            }
-            return null;
-        }
-
-        private string GetPath(Transform t)
-        {
-            if (t.parent == null) return t.name;
-            return GetPath(t.parent) + "/" + t.name;
-        }
-
-        private int GetQuestStepIndex(string questText)
-        {
-            if (string.IsNullOrEmpty(questText)) return 0;
-            try
-            {
-                // Format: "Kill monsters (5/10)" -> return 5
-                int open = questText.IndexOf('(');
-                if (open >= 0)
-                {
-                    string sub = questText.Substring(open + 1);
-                    int slash = sub.IndexOf('/');
-                    if (slash > 0)
-                    {
-                        string num = sub.Substring(0, slash);
-                        if (int.TryParse(num, out int val)) return val;
-                    }
-                }
-            }
-            catch {}
-            return 0;
-        }
 
         // ======================== STATE LOG BACKGROUND WRITER ========================
         private void StateLogWriteLoop()
@@ -4043,12 +5545,735 @@ namespace AutoQuestPlugin
             catch { }
         }
 
+        // ======================== QUEST RESUME SYSTEM (Text-Based) ========================
+        private void ResumeQuest()
+        {
+            try
+            {
+                string questText = GetCurrentQuestText();
+                if (string.IsNullOrEmpty(questText))
+                {
+                    LogActivity("⚠️ Không tìm thấy quest nào để resume!");
+                    return;
+                }
+
+                LogActivity($"🔄 Đang phân tích quest: '{questText}'...");
+                var step = QuestDatabase.GetActionForQuest(questText);
+
+                if (step == null || step.Action == ActionType.Unknown)
+                {
+                    LogActivity($"❌ Không hiểu đề bài: '{questText}'. Vui lòng làm thủ công!");
+                    return;
+                }
+
+                LogActivity($"✅ Đã hiểu! Hành động: {step.Description}");
+
+                // Execute based on Action
+                switch (step.Action)
+                {
+                    case ActionType.KillMob:
+                        LogActivity($"⚔️ Chuyển sang chế độ ĐÁNH QUÁI: {step.TargetName}");
+                        _lastActionTarget = step.TargetName;
+                        _autoAttackFlag = true;
+                        _farmState = FarmState.SEARCH_TARGET;
+                        break;
+
+                    case ActionType.TalkNPC:
+                        LogActivity($"🗣️ Chuyển sang chế độ TÌM NPC: {step.TargetName}");
+                        _lastActionTarget = step.TargetName;
+                        _autoInteractFlag = true;
+                        
+                        // Load preferred dialog sequence
+                        if (step.DialogAnswers != null && step.DialogAnswers.Count > 0)
+                        {
+                            _currentQuestDialogSequence = new List<string>(step.DialogAnswers);
+                            LogActivity($"📜 Đã tải {step.DialogAnswers.Count} câu trả lời mẫu từ DB.");
+                        }
+                        else
+                        {
+                            _currentQuestDialogSequence.Clear();
+                        }
+                        break;
+
+                    case ActionType.MoveToMap:
+                        _currentQuestActionStep = step;
+                        LogActivity($"🗺️ Auto-Move ACTIVATED: Go to {step.TargetMap} @ {step.TargetPos}");
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogActivity($"❌ Lỗi ResumeQuest: {ex.Message}");
+            }
+        }
+
+        private void CheckStartupTeleport()
+        {
+            if (_startupTeleportDone || string.IsNullOrEmpty(_startupMap) || !_managersFound) return;
+            if (_currentScene != "MainGameScene") return;
+
+            // Wait until character is truly loaded (using _playerDataManager as proxy)
+            if (_playerDataManager == null) return;
+
+            try
+            {
+                Plugin.Log.LogInfo($"[Bot] 🚀 Startup Teleport Request: {_startupMap} (Zone: {_startupZone})");
+                DoTeleport(_startupMap, _startupZone.ToString());
+                _startupTeleportDone = true; // Mark as done to avoid loop
+                Plugin.Log.LogInfo("[Bot] ✅ Startup Teleport triggered.");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[Bot] Startup Teleport error: {ex.Message}");
+            }
+        }
+
         void OnDestroy()
         {
             _stateLogRunning = false;
             if (_stateWriteThread != null && _stateWriteThread.IsAlive)
                 _stateWriteThread.Join(500);
         }
+        private void CloseAllPanels()
+        {
+             try 
+             {
+                 // Find all buttons with "Close" in name
+                 var buttons = GameObject.FindObjectsOfType<Button>();
+                 foreach (var btn in buttons)
+                 {
+                     if (btn == null || !btn.gameObject.activeInHierarchy) continue;
+                     string name = btn.gameObject.name.ToLower();
+                     if (name.Contains("close") || name.Contains("exit") || name.Contains("thoat"))
+                     {
+                         Plugin.Log.LogInfo($"[Bot] 🚑 Anti-Stuck: Clicking close button '{btn.gameObject.name}'");
+                         btn.onClick.Invoke();
+                     }
+                 }
+             }
+             catch {}
+        }
+
+        private void ClickOutsideUI()
+        {
+            try
+            {
+                var backdrop = GameObject.Find("Backdrop");
+                if (backdrop != null && backdrop.activeSelf)
+                {
+                    var btn = backdrop.GetComponent<Button>();
+                    if (btn != null)
+                    {
+                        btn.onClick.Invoke();
+                        Plugin.Log.LogInfo("[Bot] 🌑 ClickOutsideUI: Clicked Backdrop");
+                    }
+                }
+            }
+            catch { }
+        }
+
+        // ======================== AUTO LOGIN HELPERS ========================
+
+        public void HandleAutoLogin()
+        {
+            if (string.IsNullOrEmpty(_loginUsername) || string.IsNullOrEmpty(_loginPassword))
+            {
+                Plugin.Log.LogWarning("[AutoLogin] ❌ Username/Password empty in config!");
+                return;
+            }
+
+            try
+            {
+                Plugin.Log.LogInfo($"[AutoLogin] 🔑 UI Login: Setting credentials for '{_loginUsername}'...");
+
+                // --- Strategy 1: Find by EXACT name (from scene scan) ---
+                // LoginPanel > LoginForm > UserName (TMP_InputField)
+                // LoginPanel > LoginForm > Password (TMP_InputField)
+                // LoginPanel > LoginForm > Login (Button)
+                
+                bool userSet = false;
+                bool passSet = false;
+
+                // Try exact names first
+                var userNameGo = GameObject.Find("UserName");
+                var passwordGo = GameObject.Find("Password");
+
+                if (userNameGo != null)
+                {
+                    var tmpInput = userNameGo.GetComponent<TMP_InputField>();
+                    if (tmpInput != null)
+                    {
+                        tmpInput.text = _loginUsername;
+                        userSet = true;
+                        Plugin.Log.LogInfo($"[AutoLogin] ✅ Set Username on 'UserName' (exact match)");
+                    }
+                }
+                
+                if (passwordGo != null)
+                {
+                    var tmpInput = passwordGo.GetComponent<TMP_InputField>();
+                    if (tmpInput != null)
+                    {
+                        tmpInput.text = _loginPassword;
+                        passSet = true;
+                        Plugin.Log.LogInfo($"[AutoLogin] ✅ Set Password on 'Password' (exact match)");
+                    }
+                }
+
+                // --- Strategy 2: Fallback fuzzy search ---
+                if (!userSet || !passSet)
+                {
+                    Plugin.Log.LogInfo("[AutoLogin] ⚠️ Exact names not found, trying fuzzy search...");
+                    var allInputs = Resources.FindObjectsOfTypeAll<TMP_InputField>();
+                    foreach (var input in allInputs)
+                    {
+                        if (input == null || !input.gameObject.activeInHierarchy) continue;
+                        string goName = input.gameObject.name;
+                        
+                        if (!userSet && (goName == "UserName" || goName == "Account" || goName.ToLower().Contains("user") || goName.ToLower().Contains("account")))
+                        {
+                            input.text = _loginUsername;
+                            userSet = true;
+                            Plugin.Log.LogInfo($"[AutoLogin] ✅ Set Username on '{goName}' (fuzzy)");
+                        }
+                        else if (!passSet && (goName == "Password" || goName.ToLower().Contains("pass")))
+                        {
+                            input.text = _loginPassword;
+                            passSet = true;
+                            Plugin.Log.LogInfo($"[AutoLogin] ✅ Set Password on '{goName}' (fuzzy)");
+                        }
+                    }
+                }
+
+                if (userSet && passSet)
+                {
+                    Plugin.Log.LogInfo("[AutoLogin] ✅ Credentials set! Clicking Login button...");
+                    
+                    // Find Login button (exact: "Login" on LoginPanel)
+                    var loginGo = GameObject.Find("Login");
+                    if (loginGo != null && loginGo.activeInHierarchy)
+                    {
+                        var btn = loginGo.GetComponent<Button>();
+                        if (btn != null)
+                        {
+                            Plugin.Log.LogInfo("[AutoLogin] 🚀 Clicking 'Login' button!");
+                            btn.onClick.Invoke();
+                            return;
+                        }
+                    }
+
+                    // Fallback: search buttons
+                    var allBtns = Resources.FindObjectsOfTypeAll<Button>();
+                    foreach (var btn in allBtns)
+                    {
+                        if (btn == null || !btn.gameObject.activeInHierarchy) continue;
+                        string bName = btn.gameObject.name;
+                        if (bName == "Login" || bName == "LoginButton" || bName == "btnLogin" ||
+                            bName.ToLower().Contains("login") || bName.ToLower().Contains("dangnhap"))
+                        {
+                            // Avoid register panel's LoginButton
+                            var parent = btn.transform.parent;
+                            bool isRegisterPanel = false;
+                            while (parent != null)
+                            {
+                                if (parent.name == "Register") { isRegisterPanel = true; break; }
+                                parent = parent.parent;
+                            }
+                            if (isRegisterPanel) continue;
+
+                            Plugin.Log.LogInfo($"[AutoLogin] 🚀 Clicking Login Button: '{bName}'");
+                            btn.onClick.Invoke();
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    // Log all active TMP_InputFields for debugging
+                    Plugin.Log.LogWarning($"[AutoLogin] ⚠️ Could not find Input fields! UserSet:{userSet} PassSet:{passSet}");
+                    try
+                    {
+                        var debugInputs = Resources.FindObjectsOfTypeAll<TMP_InputField>();
+                        foreach (var input in debugInputs)
+                        {
+                            if (input == null) continue;
+                            Plugin.Log.LogInfo($"[AutoLogin] 🔍 TMP_InputField: '{input.gameObject.name}' active={input.gameObject.activeInHierarchy}");
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"[AutoLogin] ❌ Login error: {ex.Message}");
+            }
+        }
+
+        public void HandleCharacterSelect()
+        {
+            try
+            {
+                // From scene scan: CharacterChoosingPanel (active=False initially, becomes True after login)
+                //   └─ ChooseCharacterLayout (HorizontalLayoutGroup)
+                //        └─ Character slots (children)
+                
+                var panel = GameObject.Find("CharacterChoosingPanel");
+                if (panel == null || !panel.activeInHierarchy)
+                {
+                    // Try to find even if inactive (scene scan shows it exists but active=False)
+                    var allGOs = Resources.FindObjectsOfTypeAll<GameObject>();
+                    foreach (var go in allGOs)
+                    {
+                        if (go != null && go.name == "CharacterChoosingPanel" && go.activeInHierarchy)
+                        {
+                            panel = go;
+                            break;
+                        }
+                    }
+                }
+
+                if (panel != null && panel.activeInHierarchy)
+                {
+                    Plugin.Log.LogInfo("[AutoLogin] 👤 Character Selection Screen detected!");
+
+                    // Find ChooseCharacterLayout and click first slot
+                    var layout = panel.GetComponentInChildren<UnityEngine.UI.HorizontalLayoutGroup>();
+                    if (layout != null)
+                    {
+                        // Click first child with a Button
+                        for (int i = 0; i < layout.transform.childCount; i++)
+                        {
+                            var child = layout.transform.GetChild(i);
+                            if (child == null || !child.gameObject.activeSelf) continue;
+                            var btn = child.GetComponent<Button>();
+                            if (btn != null)
+                            {
+                                Plugin.Log.LogInfo($"[AutoLogin] 👆 Clicking character slot: '{child.name}'");
+                                btn.onClick.Invoke();
+                                break;
+                            }
+                        }
+                    }
+                    
+                    _charSelectDone = true;
+                    Plugin.Log.LogInfo("[AutoLogin] ✅ Character selected!");
+                }
+                else
+                {
+                    // If we're already in MainGameScene, we're done
+                    if (_currentScene == "MainGameScene")
+                    {
+                        _charSelectDone = true;
+                        _autoLoginDone = true;
+                        Plugin.Log.LogInfo("[AutoLogin] ✅ Already in MainGameScene, skip char select.");
+                    }
+                    else
+                    {
+                        Plugin.Log.LogInfo("[AutoLogin] ⏳ CharacterChoosingPanel not visible yet...");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"[AutoLogin] ❌ Char Select error: {ex.Message}");
+            }
+        }
+
+        public void HandleEnterGame()
+        {
+            try
+            {
+                Button btnToClick = null;
+                
+                // === STRATEGY 1: Find buttons on CharacterChoosingPanel ===
+                GameObject panel = GameObject.Find("CharacterChoosingPanel");
+                if (panel == null)
+                {
+                    var allGOs = Resources.FindObjectsOfTypeAll<GameObject>();
+                    foreach (var go in allGOs)
+                    {
+                        if (go != null && go.name == "CharacterChoosingPanel" && go.activeInHierarchy)
+                        {
+                            panel = go;
+                            break;
+                        }
+                    }
+                }
+
+                if (panel != null && panel.activeInHierarchy)
+                {
+                    Plugin.Log.LogInfo("[AutoLogin] 🎮 CharacterChoosingPanel active! Scanning buttons...");
+                    var panelButtons = panel.GetComponentsInChildren<Button>(false);
+                    Button fallbackBtn = null;
+                    
+                    foreach (var btn in panelButtons)
+                    {
+                        if (btn == null || !btn.gameObject.activeInHierarchy) continue;
+                        string bName = btn.gameObject.name.ToLower();
+                        
+                        // Skip "Tạo mới" (Create New) buttons  
+                        if (bName.Contains("create") || bName.Contains("tao") || bName.Contains("new")) continue;
+                        
+                        string buttonText = "";
+                        var tmpText = btn.GetComponentInChildren<TextMeshProUGUI>();
+                        if (tmpText != null) buttonText = tmpText.text;
+                        Plugin.Log.LogInfo($"[AutoLogin]   → Button: '{btn.gameObject.name}' text='{buttonText}'");
+                        
+                        string textLow = (buttonText ?? "").ToLower();
+                        if (textLow.Contains("vào") || textLow.Contains("vao") || textLow.Contains("game") ||
+                            textLow.Contains("enter") || textLow.Contains("play") || textLow.Contains("start") ||
+                            bName.Contains("enter") || bName.Contains("play") || bName.Contains("vao"))
+                        {
+                            btnToClick = btn;
+                            Plugin.Log.LogInfo($"[AutoLogin] ✅ Matched: '{btn.gameObject.name}' text='{buttonText}'");
+                            break;
+                        }
+                        
+                        // Fallback: first non-create button
+                        if (fallbackBtn == null && !textLow.Contains("tạo") && !textLow.Contains("mới"))
+                            fallbackBtn = btn;
+                    }
+                    
+                    if (btnToClick == null && fallbackBtn != null)
+                    {
+                        btnToClick = fallbackBtn;
+                        Plugin.Log.LogInfo($"[AutoLogin] 🔄 Using fallback button: '{fallbackBtn.gameObject.name}'");
+                    }
+                }
+
+                // === STRATEGY 2: Common button names ===
+                if (btnToClick == null)
+                {
+                    string[] btnNames = { "PlayButton", "btnPlay", "btnEnter", "ButtonPlay", 
+                        "btn_play", "StartGameButton", "StartButton", "EnterGame", "VaoGame" };
+                    foreach (var name in btnNames)
+                    {
+                        var obj = GameObject.Find(name);
+                        if (obj != null && obj.activeInHierarchy)
+                        {
+                            btnToClick = obj.GetComponent<Button>();
+                            if (btnToClick != null)
+                            {
+                                Plugin.Log.LogInfo($"[AutoLogin] 🎮 Found by name: '{name}'");
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // === STRATEGY 3: Global button text search ===
+                if (btnToClick == null)
+                {
+                    var allBtns = Resources.FindObjectsOfTypeAll<Button>();
+                    foreach (var btn in allBtns)
+                    {
+                        if (btn == null || !btn.gameObject.activeInHierarchy) continue;
+                        string bName = btn.gameObject.name.ToLower();
+                        if (bName.Contains("close") || bName.Contains("back") || bName.Contains("exit")) continue;
+                        
+                        string buttonText = "";
+                        var tmpText = btn.GetComponentInChildren<TextMeshProUGUI>();
+                        if (tmpText != null) buttonText = tmpText.text.ToLower();
+                        
+                        if (bName.Contains("play") || bName.Contains("start") || bName.Contains("enter") ||
+                            bName.Contains("vaogame") || bName.Contains("vao") ||
+                            buttonText.Contains("vào") || buttonText.Contains("vao") ||
+                            buttonText.Contains("game") || buttonText.Contains("play") || buttonText.Contains("bắt đầu"))
+                        {
+                            btnToClick = btn;
+                            Plugin.Log.LogInfo($"[AutoLogin] 🎮 Found by global search: '{btn.gameObject.name}' text='{buttonText}'");
+                            break;
+                        }
+                    }
+                }
+
+                if (btnToClick != null)
+                {
+                    Plugin.Log.LogInfo($"[AutoLogin] 🚀 Clicking '{btnToClick.gameObject.name}' to Enter Game!");
+                    btnToClick.onClick.Invoke();
+                }
+                else
+                {
+                    Plugin.Log.LogWarning("[AutoLogin] ⏳ No enter button found, retrying...");
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"[AutoLogin] ❌ Enter Game error: {ex.Message}");
+            }
+        }
+    }
+
+    // ======================== BOT HELPER (STATICS) ========================
+    // Moving reflection helpers to a separate static class avoids IL2CPP signature exhaustion
+    // and unsupported interop type warnings in the registered MonoBehaviour.
+    public static class BotHelper
+    {
+        public static MonoBehaviour FindSingletonByType(string typeName)
+        {
+            var allMB = GameObject.FindObjectsOfType<MonoBehaviour>(true);
+            foreach (var mb in allMB)
+            {
+                if (mb == null) continue;
+                if (mb.GetIl2CppType().Name == typeName)
+                    return mb;
+            }
+            return null;
+        }
+
+        public static T GetFieldValue<T>(MonoBehaviour target, string fieldName)
+        {
+            var fields = target.GetIl2CppType().GetFields(Il2CppSystem.Reflection.BindingFlags.Public | Il2CppSystem.Reflection.BindingFlags.NonPublic | Il2CppSystem.Reflection.BindingFlags.Instance);
+            foreach (var f in fields)
+            {
+                if (f.Name == fieldName)
+                {
+                    var result = f.GetValue(target);
+                    if (result != null)
+                    {
+                        if (typeof(T) == typeof(string))
+                            return (T)(object)result.ToString();
+                        return (T)Convert.ChangeType(result.ToString(), typeof(T));
+                    }
+                    return default(T);
+                }
+            }
+            throw new Exception($"Field '{fieldName}' not found on {target.GetIl2CppType().Name}");
+        }
+
+        public static T GetFieldValueFromObject<T>(Il2CppSystem.Object target, string fieldName)
+        {
+            var fields = target.GetIl2CppType().GetFields(Il2CppSystem.Reflection.BindingFlags.Public | Il2CppSystem.Reflection.BindingFlags.NonPublic | Il2CppSystem.Reflection.BindingFlags.Instance);
+            foreach (var f in fields)
+            {
+                if (f.Name == fieldName)
+                {
+                    var result = f.GetValue(target);
+                    if (result != null)
+                    {
+                        if (typeof(T) == typeof(string))
+                            return (T)(object)result.ToString();
+                        return (T)Convert.ChangeType(result.ToString(), typeof(T));
+                    }
+                    return default(T);
+                }
+            }
+            throw new Exception($"Field '{fieldName}' not found");
+        }
+
+        public static void CallMethod(MonoBehaviour target, string methodName, object[] parameters = null)
+        {
+            var methods = target.GetIl2CppType().GetMethods();
+            foreach (var m in methods)
+            {
+                if (m.Name == methodName)
+                {
+                    var parms = m.GetParameters();
+                    if (parameters == null || parameters.Length == 0)
+                    {
+                        if (parms == null || parms.Length == 0) {
+                            m.Invoke(target, null);
+                            return;
+                        }
+                    }
+                    else if (parms != null && parms.Length == parameters.Length)
+                    {
+                        var il2CppParams = new Il2CppSystem.Object[parameters.Length];
+                        for (int i = 0; i < parameters.Length; i++)
+                        {
+                            if (parameters[i] is bool b)
+                                il2CppParams[i] = (Il2CppSystem.Object)Il2CppSystem.Boolean.Parse(b.ToString());
+                            else if (parameters[i] is int val)
+                                il2CppParams[i] = (Il2CppSystem.Object)Il2CppSystem.Int32.Parse(val.ToString());
+                            else if (parameters[i] is string s)
+                                il2CppParams[i] = (Il2CppSystem.Object)s;
+                            else
+                                il2CppParams[i] = (Il2CppSystem.Object)parameters[i];
+                        }
+                        m.Invoke(target, il2CppParams);
+                        return;
+                    }
+                }
+            }
+            throw new Exception($"Method '{methodName}' with {parameters?.Length ?? 0} params not found on {target.GetIl2CppType().Name}");
+        }
+
+        public static void CallMethodNoParam(MonoBehaviour target, string methodName)
+        {
+            var methods = target.GetIl2CppType().GetMethods();
+            foreach (var m in methods)
+            {
+                if (m.Name == methodName)
+                {
+                    var parms = m.GetParameters();
+                    if (parms == null || parms.Length == 0)
+                    {
+                        m.Invoke(target, null);
+                        return;
+                    }
+                }
+            }
+            throw new Exception($"No parameterless '{methodName}' on {target.GetIl2CppType().Name}");
+        }
+
+        public static T CallMethodReturn<T>(MonoBehaviour target, string methodName)
+        {
+            var methods = target.GetIl2CppType().GetMethods();
+            foreach (var m in methods)
+            {
+                if (m.Name == methodName)
+                {
+                    var result = m.Invoke(target, null);
+                    if (result != null)
+                        return (T)Convert.ChangeType(result.ToString(), typeof(T));
+                    return default(T);
+                }
+            }
+            throw new Exception($"Method '{methodName}' not found");
+        }
+
+        public static bool HasMethod(MonoBehaviour target, string methodName)
+        {
+            try
+            {
+                var methods = target.GetIl2CppType().GetMethods();
+                foreach (var m in methods)
+                    if (m.Name == methodName) return true;
+            }
+            catch { }
+            return false;
+        }
+
+        public static GameObject FindInactiveChild(Transform parent, string name)
+        {
+            if (parent == null) return null;
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                var child = parent.GetChild(i);
+                if (child == null) continue;
+                if (child.gameObject.name == name)
+                    return child.gameObject;
+                var found = FindInactiveChild(child, name);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        public static string GetPath(Transform t)
+        {
+            if (t.parent == null) return t.name;
+            return GetPath(t.parent) + "/" + t.name;
+        }
+
+        public static int GetQuestStepIndex(string questText)
+        {
+            if (string.IsNullOrEmpty(questText)) return 0;
+            try
+            {
+                int open = questText.IndexOf('(');
+                if (open >= 0)
+                {
+                    string sub = questText.Substring(open + 1);
+                    int slash = sub.IndexOf('/');
+                    if (slash > 0)
+                    {
+                        string num = sub.Substring(0, slash);
+                        if (int.TryParse(num, out int val)) return val;
+                    }
+                }
+            }
+            catch {}
+            return 0;
+        }
+
+        public static string ParseJsonString(string json, string key)
+        {
+            string search = $"\"{key}\"";
+            int idx = json.IndexOf(search);
+            if (idx < 0) return "";
+            int colonIdx = json.IndexOf(':', idx + search.Length);
+            if (colonIdx < 0) return "";
+            int quoteStart = json.IndexOf('"', colonIdx + 1);
+            if (quoteStart < 0) return "";
+            int quoteEnd = json.IndexOf('"', quoteStart + 1);
+            if (quoteEnd < 0) return "";
+            return json.Substring(quoteStart + 1, quoteEnd - quoteStart - 1);
+        }
+
+        public static int ParseJsonInt(string json, string key)
+        {
+            string search = $"\"{key}\"";
+            int idx = json.IndexOf(search);
+            if (idx < 0) return 0;
+            int colonIdx = json.IndexOf(':', idx + search.Length);
+            if (colonIdx < 0) return 0;
+            string rest = json.Substring(colonIdx + 1).TrimStart();
+            string numStr = "";
+            foreach (char c in rest)
+            {
+                if (char.IsDigit(c) || c == '-') numStr += c;
+                else if (numStr.Length > 0) break;
+            }
+            return int.TryParse(numStr, out int result) ? result : 0;
+        }
+
+        public static bool ParseJsonBool(string json, string key)
+        {
+            string search = $"\"{key}\"";
+            int idx = json.IndexOf(search);
+            if (idx < 0) return false;
+            int colonIdx = json.IndexOf(':', idx + search.Length);
+            if (colonIdx < 0) return false;
+            string rest = json.Substring(colonIdx + 1).TrimStart();
+            return rest.StartsWith("true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static string EscapeJson(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "");
+        }
+
+        public static string CleanTextTags(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            string result = text;
+            while (result.Contains("<color"))
+            {
+                int tagStart = result.IndexOf("<color");
+                int tagEnd = result.IndexOf('>', tagStart);
+                if (tagEnd > tagStart)
+                    result = result.Substring(0, tagStart) + result.Substring(tagEnd + 1);
+                else break;
+            }
+            result = result.Replace("</color>", "");
+            result = result.Replace("<b>", "").Replace("</b>", "");
+            result = result.Replace("<i>", "").Replace("</i>", "");
+            result = result.Replace("<size=", "").Replace("</size>", "");
+            while (result.Contains("<") && result.Contains(">"))
+            {
+                int s = result.IndexOf('<');
+                int e = result.IndexOf('>', s);
+                if (e > s && e - s < 50)
+                    result = result.Substring(0, s) + result.Substring(e + 1);
+                else break;
+            }
+            return result.Trim();
+        }
+
+        public static string btnTextFromButton(Button btn)
+        {
+            if (btn == null) return "";
+            GameObject go = btn.gameObject;
+            var tmp = go.GetComponentInChildren<TextMeshProUGUI>();
+            if (tmp != null) return tmp.text;
+            var t = go.GetComponentInChildren<Text>();
+            if (t != null) return t.text;
+            t = go.GetComponent<Text>();
+            if (t != null) return t.text;
+            tmp = go.GetComponentInChildren<TextMeshProUGUI>();
+            if (tmp != null) return tmp.text;
+            return "";
+        }
     }
 }
-                                    
